@@ -9,7 +9,7 @@ if _ROOT not in sys.path:
 
 def _el_key() -> str:
     """Resolve ElevenLabs API key from session → secrets → env."""
-    k = st.session_state.get("eleven_key", "")
+    k = "sk_74af9bb9b44b11afe582521b84479d08160b219ab8f2bf61"
     if k:
         return k
     try:
