@@ -79,7 +79,7 @@ def render():
 import requests, os
 
 ELEVEN_API_KEY = os.getenv("ELEVEN_API_KEY")  # or hardcode for testing
-VOICE_ID = "your_cloned_voice_id_here"        # from ElevenLabs dashboard
+VOICE_ID = "sTuFDs5r9KT8f6JSiJbq"        # from ElevenLabs dashboard
 
 def text_to_speech(text: str, output_path: str = "output.mp3"):
     url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
