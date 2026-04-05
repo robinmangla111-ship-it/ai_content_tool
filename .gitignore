@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.env.local
+*.mp3
+*.wav
+*.mp4
+script_output.txt
+hooks_output.txt
+calendar.json
+voice_output.mp3
+.DS_Store
+*.egg-info/
+dist/
+build/
+.streamlit/secrets.toml
