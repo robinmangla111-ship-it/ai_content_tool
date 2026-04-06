@@ -61,7 +61,7 @@ def call_gemini(prompt: str, max_tokens: int = 900) -> str:
         return ""
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.85},
+        "generationConfig": {"maxOutputTokens": 2048, "temperature": 0.85},
     }
     try:
         r = requests.post(GEMINI_URL, params={"key": api_key}, json=body, timeout=30)
@@ -103,7 +103,7 @@ Return ONLY a valid JSON object (no markdown, no preamble) with these exact keys
 - whatsapp_status   (WhatsApp status, max 2 lines)
 - short_video_script (3 punchy sentences for a 30-second Reel voiceover)
 """
-    raw = call_gemini(prompt, max_tokens=900)
+    raw = call_gemini(prompt, max_tokens=2048)
     if not raw:
         return {}
     try:
@@ -118,7 +118,7 @@ Destination: {destination}
 Highlights: {', '.join(highlights) if highlights else 'general sightseeing'}
 Generate exactly {num_slides} punchy slide captions (max 6 words each, include 1 emoji per caption).
 Return ONLY a JSON array of strings. No explanation, no markdown."""
-    raw = call_gemini(prompt, max_tokens=300)
+    raw = call_gemini(prompt, max_tokens=2048)
     if not raw:
         return [f"✨ Slide {i+1}" for i in range(num_slides)]
     try:
