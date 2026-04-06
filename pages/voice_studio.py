@@ -263,14 +263,19 @@ def _render_generator(provider: str):
     with col_left:
         # Voice selector
         if provider == "azure":
-            st.markdown("**Voice** (400+ neural voices)")
+            st.markdown("**Voice** (Hindi + English)")
+            filtered_voices = {
+        k: v for k, v in AZURE_VOICES.items()
+        if v[0].startswith("hi-") or v[0].startswith("en-")
+    }
+
             voice_label = st.selectbox(
                 "Select voice",
-                list(AZURE_VOICES.keys()),
+                list(filtered_voices.keys()),
                 index=0,
                 label_visibility="collapsed",
             )
-            lang, voice_name = AZURE_VOICES[voice_label]
+            lang, voice_name = filtered_voices[voice_label]
 
             c1, c2 = st.columns(2)
             with c1:
