@@ -1,5 +1,5 @@
 import streamlit as st
-import sys, os, base64, requests, json
+import sys, os, base64, requests
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
@@ -7,87 +7,21 @@ if _ROOT not in sys.path:
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PROVIDER: Microsoft Azure Text-to-Speech
-#   Free tier: 500,000 chars/month FOREVER (no expiry, no credit card)
-#   API key:   console.azure.com → Speech → Keys & Endpoint
-#   Voices:    400+ neural voices, very natural quality
-#
-# FALLBACK: OpenAI TTS
-#   Uses your existing Groq/OpenAI key if Azure not configured
-#   6 voices (alloy, echo, fable, onyx, nova, shimmer)
+#   Free tier: 500,000 chars/month FOREVER
+#   API key:   portal.azure.com → Speech → Keys & Endpoint
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ── Curated Azure voice list (best English + popular accents) ─────────────────
+# ── Azure voice list (ONLY Hindi India + English India) ───────────────────────
+# Format: "Label": (lang, voice_name, [styles])
 AZURE_VOICES = {
-    # Hindi (India) - hi-IN
-    "hi-IN-SwaraNeural": {
-        "gender": "Female",
-        "styles": ["cheerful", "empathetic", "newscast"]  # Default voice with styles
-    },
-    "hi-IN-MadhurNeural": {
-        "gender": "Male",
-        "styles": []  # Default only
-    },
-    "hi-IN-AaravNeural": {
-        "gender": "Male",
-        "styles": []  # New voice
-    },
-    "hi-IN-AnanyaNeural": {
-        "gender": "Female",
-        "styles": []  # New voice
-    },
-    "hi-IN-KavyaNeural": {
-        "gender": "Female",
-        "styles": []  # New voice
-    },
-    "hi-IN-KunalNeural": {
-        "gender": "Male",
-        "styles": []  # New voice
-    },
-    "hi-IN-RehaanNeural": {
-        "gender": "Male",
-        "styles": []  # New voice
-    },
-    "hi-IN-AartiNeural": {
-        "gender": "Female",
-        "styles": []
-    },
-    "hi-IN-ArjunNeural": {
-        "gender": "Male",
-        "styles": []
-    },
+    # Hindi (India)
+    "Hindi Female - Swara": ("hi-IN", "hi-IN-SwaraNeural", ["cheerful", "empathetic", "newscast"]),
+    "Hindi Male - Madhur": ("hi-IN", "hi-IN-MadhurNeural", []),
 
-    # English (India) - en-IN
-    "en-IN-NeerjaNeural": {
-        "gender": "Female",
-        "styles": ["cheerful", "empathetic", "newscast"]  # Default voice with styles
-    },
-    "en-IN-PrabhatNeural": {
-        "gender": "Male",
-        "styles": []  # Default only
-    },
-    "en-IN-AashiNeural": {
-        "gender": "Female",
-        "styles": []  # New voice
-    },
-    "en-IN-AnanyaNeural": {
-        "gender": "Female",
-        "styles": []  # New voice
-    },
-    "en-IN-KavyaNeural": {
-        "gender": "Female",
-        "styles": []  # New voice
-    },
-    "en-IN-AaravNeural": {
-        "gender": "Male",
-        "styles": []  # New voice
-    },
-    "en-IN-KunalNeural": {
-        "gender": "Male",
-        "styles": []  # New voice
-    },
-    # Third new male voice name not specified in search results
+    # English (India)
+    "English Female - Neerja": ("en-IN", "en-IN-NeerjaNeural", ["cheerful", "empathetic", "newscast"]),
+    "English Male - Prabhat": ("en-IN", "en-IN-PrabhatNeural", []),
 }
-
 
 OPENAI_VOICES = {
     "Alloy (neutral)":  "alloy",
@@ -100,13 +34,14 @@ OPENAI_VOICES = {
 
 
 # ── Key resolution ────────────────────────────────────────────────────────────
-
 def _get(session_key: str, secret_key: str, env_key: str) -> str:
     v = st.session_state.get(session_key, "").strip()
-    if v: return v
+    if v:
+        return v
     try:
         v = str(st.secrets.get(secret_key, "")).strip()
-        if v: return v
+        if v:
+            return v
     except Exception:
         pass
     return os.getenv(env_key, "").strip()
@@ -115,60 +50,73 @@ def _get(session_key: str, secret_key: str, env_key: str) -> str:
 def _azure_key() -> str:
     return _get("azure_tts_key", "AZURE_TTS_KEY", "AZURE_TTS_KEY")
 
+
 def _azure_region() -> str:
     return _get("azure_tts_region", "AZURE_TTS_REGION", "AZURE_TTS_REGION") or "eastus"
+
 
 def _openai_key() -> str:
     return _get("api_key", "OPENAI_API_KEY", "OPENAI_API_KEY")
 
 
 # ── Azure TTS ─────────────────────────────────────────────────────────────────
-
 def azure_tts(text: str, voice_name: str, lang: str, rate: float, pitch: float, style: str = None) -> bytes | None:
     """Call Azure Cognitive Services TTS with optional style. Returns MP3 bytes."""
-    key    = _azure_key()
+    key = _azure_key()
     region = _azure_region()
 
+    if not key:
+        st.error("❌ Azure key missing. Paste it in Azure Setup tab.")
+        return None
+
     # Build rate/pitch strings
-    rate_str  = f"{int((rate-1)*100):+d}%"
+    rate_str = f"{int((rate - 1) * 100):+d}%"
     pitch_str = f"{int(pitch):+d}Hz"
-    
-    # Escape XML special characters in text
+
+    # Escape XML special characters
     import html
     safe_text = html.escape(text)
-    
-    # Build SSML with optional style
+
     if style:
-        ssml = f"""<speak version='1.0' xmlns='[w3.org](http://www.w3.org/2001/10/synthesis)' 
-                   xmlns:mstts='[w3.org](http://www.w3.org/2001/mstts)' xml:lang='{lang}'>
-  <voice name='{voice_name}'>
-    <mstts:express-as style='{style}'>
-      <prosody rate='{rate_str}' pitch='{pitch_str}'>
+        ssml = f"""
+<speak version="1.0"
+ xmlns="http://www.w3.org/2001/10/synthesis"
+ xmlns:mstts="http://www.w3.org/2001/mstts"
+ xml:lang="{lang}">
+  <voice name="{voice_name}">
+    <mstts:express-as style="{style}">
+      <prosody rate="{rate_str}" pitch="{pitch_str}">
         {safe_text}
       </prosody>
     </mstts:express-as>
   </voice>
-</speak>"""
+</speak>
+"""
     else:
-        ssml = f"""<speak version='1.0' xmlns='[w3.org](http://www.w3.org/2001/10/synthesis)' xml:lang='{lang}'>
-  <voice name='{voice_name}'>
-    <prosody rate='{rate_str}' pitch='{pitch_str}'>
+        ssml = f"""
+<speak version="1.0"
+ xmlns="http://www.w3.org/2001/10/synthesis"
+ xml:lang="{lang}">
+  <voice name="{voice_name}">
+    <prosody rate="{rate_str}" pitch="{pitch_str}">
       {safe_text}
     </prosody>
   </voice>
-</speak>"""
+</speak>
+"""
 
-    url = f"[{region}.tts.speech.microsoft.com](https://{region}.tts.speech.microsoft.com/cognitiveservices/v1)"
+    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
     headers = {
         "Ocp-Apim-Subscription-Key": key,
         "Content-Type": "application/ssml+xml",
         "X-Microsoft-OutputFormat": "audio-24khz-96kbitrate-mono-mp3",
         "User-Agent": "ContentAIStudio",
     }
+
     try:
         r = requests.post(url, data=ssml.encode("utf-8"), headers=headers, timeout=30)
         if r.status_code == 401:
-            st.error("❌ Azure key invalid (401). Check your key and region.")
+            st.error("❌ Azure key invalid (401). Check your key + region.")
             return None
         if r.status_code == 400:
             st.error(f"❌ Azure bad request: {r.text[:300]}")
@@ -180,7 +128,6 @@ def azure_tts(text: str, voice_name: str, lang: str, rate: float, pitch: float, 
         return None
 
 
-
 def azure_check_key(key: str, region: str) -> tuple[bool, str]:
     """Quick validation by hitting the token endpoint."""
     url = f"https://{region}.api.cognitive.microsoft.com/sts/v1.0/issueToken"
@@ -189,9 +136,9 @@ def azure_check_key(key: str, region: str) -> tuple[bool, str]:
         if r.status_code == 200:
             return True, "✅ Azure key valid!"
         elif r.status_code == 401:
-            return False, "❌ 401 — Invalid key. Double check you copied the correct key."
+            return False, "❌ 401 — Invalid key. Double check Key 1 from Azure portal."
         elif r.status_code == 403:
-            return False, "❌ 403 — Key valid but wrong region. Try 'eastus', 'westeurope', etc."
+            return False, "❌ 403 — Key valid but wrong region. Try 'eastus', 'centralindia', etc."
         else:
             return False, f"❌ HTTP {r.status_code}: {r.text[:200]}"
     except Exception as e:
@@ -199,11 +146,10 @@ def azure_check_key(key: str, region: str) -> tuple[bool, str]:
 
 
 # ── OpenAI TTS fallback ───────────────────────────────────────────────────────
-
 def openai_tts(text: str, voice: str, model: str) -> bytes | None:
     key = _openai_key()
     if not key:
-        st.error("No OpenAI key found either. Add at least one key above.")
+        st.error("No OpenAI key found. Add it in sidebar or secrets.")
         return None
     try:
         r = requests.post(
@@ -223,7 +169,6 @@ def openai_tts(text: str, voice: str, model: str) -> bytes | None:
 
 
 # ── Audio player ──────────────────────────────────────────────────────────────
-
 def audio_html(audio_bytes: bytes) -> str:
     b64 = base64.b64encode(audio_bytes).decode()
     return f"""<audio controls style="width:100%;margin-top:8px;border-radius:8px">
@@ -232,14 +177,15 @@ def audio_html(audio_bytes: bytes) -> str:
 
 
 # ── Page ──────────────────────────────────────────────────────────────────────
-
 def render():
     st.markdown("# 🎙️ Voice Studio")
     st.markdown("Convert your script to audio — **500,000 chars/month free** via Azure Neural TTS.")
     st.markdown("---")
 
-    # ── Provider tabs ─────────────────────────────────────────────────────────
-    tab_azure, tab_openai = st.tabs(["☁️ Azure TTS (recommended — 500k free/mo)", "🤖 OpenAI TTS (uses your existing key)"])
+    tab_azure, tab_openai = st.tabs([
+        "☁️ Azure TTS (recommended — 500k free/mo)",
+        "🤖 OpenAI TTS (uses your existing key)"
+    ])
 
     with tab_azure:
         _render_azure_setup()
@@ -249,7 +195,6 @@ def render():
 
     st.markdown("---")
 
-    # ── Main generator (shared) ───────────────────────────────────────────────
     provider = st.session_state.get("tts_provider", "azure")
     _render_generator(provider)
 
@@ -258,13 +203,14 @@ def _render_azure_setup():
     st.markdown("### 🔑 Azure Speech key setup")
     st.info("""
 **Get your free Azure key (takes 3 minutes):**
-1. Go to [portal.azure.com](https://portal.azure.com) → Sign up free (no credit card for free tier)
-2. Search **"Speech"** → Create → Choose **Free F0 tier** → Create
-3. Go to your Speech resource → **Keys and Endpoint**
-4. Copy **Key 1** and your **Region** (e.g. `eastus`)
+1. Go to portal.azure.com → Sign up
+2. Search **Speech** → Create resource → Choose **Free F0 tier**
+3. Open Speech resource → **Keys and Endpoint**
+4. Copy **Key 1** and your **Region** (example: `eastus`, `centralindia`)
     """)
 
     c1, c2 = st.columns([3, 1])
+
     with c1:
         key = st.text_input(
             "Azure Speech Key",
@@ -285,6 +231,7 @@ def _render_azure_setup():
             st.session_state["azure_tts_region"] = region.strip()
 
     col_btn, col_status = st.columns([1, 2])
+
     with col_btn:
         if st.button("🔍 Test Azure Key", use_container_width=True):
             k = st.session_state.get("azure_tts_key", "")
@@ -301,16 +248,17 @@ def _render_azure_setup():
                     col_status.error(msg)
 
     if st.session_state.get("tts_provider") == "azure":
-        st.success("✅ Using Azure TTS — 500k chars/month free")
+        st.success("✅ Using Azure TTS")
     else:
-        if st.button("➡️ Use Azure TTS anyway", use_container_width=False):
+        if st.button("➡️ Use Azure TTS anyway"):
             st.session_state["tts_provider"] = "azure"
             st.rerun()
 
 
 def _render_openai_setup():
     st.markdown("### 🤖 OpenAI TTS")
-    st.info("Uses your existing OpenAI API key from the sidebar. 6 high-quality voices. Not free — costs ~$0.015/1k chars.")
+    st.info("Uses your OpenAI key. Not free — costs ~$0.015/1k chars.")
+
     existing = _openai_key()
     if existing:
         st.success(f"✅ OpenAI key found (`{existing[:8]}...`)")
@@ -318,45 +266,57 @@ def _render_openai_setup():
             st.session_state["tts_provider"] = "openai"
             st.rerun()
     else:
-        st.warning("No OpenAI key found. Add it in the sidebar under API Keys.")
+        st.warning("No OpenAI key found. Add it in sidebar or secrets.")
 
 
 def _render_generator(provider: str):
     st.markdown("### 🎛️ Generate Audio")
+
     col_left, col_right = st.columns([1, 1], gap="large")
+
     with col_left:
         if provider == "azure":
-            st.markdown("**Voice** (Hindi + English with Styles)")
-            
-            # Filter for Hindi and English only
-            filtered_voices = {
-                k: v for k, v in AZURE_VOICES.items()
-                if v[0].startswith("hi-") or v[0].startswith("en-")
-            }
+            st.markdown("**Voice** (Hindi + English India only)")
+
             voice_label = st.selectbox(
                 "Select voice",
-                list(filtered_voices.keys()),
+                list(AZURE_VOICES.keys()),
                 index=0,
                 label_visibility="collapsed",
             )
-            voice_data = filtered_voices[voice_label]
-            lang = voice_data[0]
-            voice_name = voice_data[1]
-            style = voice_data[2] if len(voice_data) > 2 else None
+
+            lang, voice_name, styles = AZURE_VOICES[voice_label]
+
+            style = None
+            if styles:
+                style = st.selectbox("Style", ["default"] + styles, index=0)
+                if style == "default":
+                    style = None
+
             c1, c2 = st.columns(2)
             with c1:
-                rate = st.slider("Speed", 0.5, 2.0, 1.0, 0.1, help="1.0 = normal speed")
+                rate = st.slider("Speed", 0.5, 2.0, 1.0, 0.1)
             with c2:
-                pitch = st.slider("Pitch (Hz)", -20, 20, 0, 1, help="0 = default pitch"
+                pitch = st.slider("Pitch (Hz)", -20, 20, 0, 1)
+
+            oai_model = None
+
         else:
             st.markdown("**Voice**")
-            voice_label = st.selectbox("Select voice", list(OPENAI_VOICES.keys()),
-                                       label_visibility="collapsed")
+
+            voice_label = st.selectbox(
+                "Select voice",
+                list(OPENAI_VOICES.keys()),
+                label_visibility="collapsed"
+            )
             voice_name = OPENAI_VOICES[voice_label]
-            oai_model = st.selectbox("Model", ["tts-1", "tts-1-hd"],
-                                     help="tts-1 = fast, tts-1-hd = higher quality")
+
+            oai_model = st.selectbox("Model", ["tts-1", "tts-1-hd"])
+
             lang = None
-            rate = pitch = None
+            rate = None
+            pitch = None
+            style = None
 
         st.markdown("---")
         st.markdown("**Script text**")
@@ -365,13 +325,13 @@ def _render_generator(provider: str):
             "Text",
             value=st.session_state.get("last_script", ""),
             height=220,
-            placeholder="Paste your script or generate one in Script Generator first...",
+            placeholder="Paste your script here...",
             label_visibility="collapsed",
         )
 
         char_count = len(text)
-        remaining = 500000 - char_count if provider == "azure" else None
         color = "red" if char_count > 480000 else "orange" if char_count > 400000 else "green"
+
         st.markdown(
             f'<p style="font-size:12px;color:{color}">'
             f"Characters: {char_count:,}"
@@ -403,10 +363,12 @@ def _render_generator(provider: str):
                 st.success(f"✅ {len(audio_bytes)/1024:.0f} KB generated!")
 
         audio = st.session_state.get("last_audio")
+
         if audio:
             lbl = st.session_state.get("last_audio_label", "")
             st.markdown(f"**Voice:** {lbl}")
             st.markdown(audio_html(audio), unsafe_allow_html=True)
+
             st.download_button(
                 "📥 Download MP3",
                 data=audio,
@@ -418,13 +380,13 @@ def _render_generator(provider: str):
             st.markdown("---")
             st.markdown("### ▶️ Next: Avatar video")
             st.markdown("""
-Download your MP3, then upload to a free avatar tool:
+Download your MP3, then upload to an avatar tool:
 
-🥇 **[Vidnoz](https://app.vidnoz.com)** — 60 min/month free  
-🥈 **[D-ID](https://studio.d-id.com)** — 14-day free trial  
-🥉 **[HeyGen](https://app.heygen.com)** — 3 free videos  
+🥇 Vidnoz — 60 min/month free  
+🥈 D-ID — free trial  
+🥉 HeyGen — limited free videos  
 
-Then add captions in **[CapCut](https://www.capcut.com)** → export 1080×1920 → publish!
+Then add captions in CapCut → export 1080×1920 → publish!
             """)
         else:
             st.markdown("""
