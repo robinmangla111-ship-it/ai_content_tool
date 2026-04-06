@@ -88,7 +88,8 @@ with st.sidebar:
             "✍️ Script Generator",
             "🎯 Hook Builder",
             "📅 Content Calendar",
-            "🎙️ Voice Studio",          # ← NEW
+            "🎙️ Voice Studio",         
+            "🏖️ Travel Content Creator",# ← NEW
             "🗣️ Voice Clone Setup",
             "🎥 Avatar Video Guide",
             "📊 Analytics Tracker",
@@ -136,7 +137,8 @@ if   "Dashboard"        in page: load_page("dashboard")
 elif "Script Generator" in page: load_page("script_gen")
 elif "Hook Builder"     in page: load_page("hook_builder")
 elif "Content Calendar" in page: load_page("calendar_page")
-elif "Voice Studio"     in page: load_page("voice_studio")   # ← NEW
+elif "Voice Studio"     in page: load_page("voice_studio")   
+elif "Travel Content Creator" in page: load_page("travel_content")# ← NEW
 elif "Voice Clone"      in page: load_page("voice_clone")
 elif "Avatar Video"     in page: load_page("avatar_guide")
 elif "Analytics"        in page: load_page("analytics")
