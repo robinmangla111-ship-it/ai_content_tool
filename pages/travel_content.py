@@ -50,7 +50,7 @@ GEMINI_URL   = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI
 
 def _get_gemini_key() -> str:
     try:
-        return st.secrets["GEMINI_API_KEY"]
+        return "AIzaSyDikfywYg9dySOzqszkNvymIGi0TuhqAxU"
     except Exception:
         return os.environ.get("GEMINI_API_KEY", "")
 
