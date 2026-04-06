@@ -18,29 +18,76 @@ if _ROOT not in sys.path:
 
 # ── Curated Azure voice list (best English + popular accents) ─────────────────
 AZURE_VOICES = {
-    # English - Male
-    "Andrew (EN-US, Natural Male)":     ("en-US", "en-US-AndrewNeural"),
-    "Brian (EN-US, Calm Male)":         ("en-US", "en-US-BrianNeural"),
-    "Ryan (EN-GB, British Male)":       ("en-GB", "en-GB-RyanNeural"),
-    "Liam (EN-CA, Canadian Male)":      ("en-CA", "en-CA-LiamNeural"),
-    "William (EN-AU, Australian Male)": ("en-AU", "en-AU-WilliamNeural"),
-    # English - Female
-    "Emma (EN-US, Natural Female)":     ("en-US", "en-US-EmmaNeural"),
-    "Jenny (EN-US, Friendly Female)":   ("en-US", "en-US-JennyNeural"),
-    "Aria (EN-US, Expressive Female)":  ("en-US", "en-US-AriaNeural"),
-    "Sonia (EN-GB, British Female)":    ("en-GB", "en-GB-SoniaNeural"),
-    "Natasha (EN-AU, Australian F)":    ("en-AU", "en-AU-NatashaNeural"),
-    # Indian English
-    "Neerja (EN-IN, Indian Female)":    ("en-IN", "en-IN-NeerjaNeural"),
-    "Prabhat (EN-IN, Indian Male)":     ("en-IN", "en-IN-PrabhatNeural"),
-    # Hindi
-    "Madhur (HI-IN, Hindi Male)":       ("hi-IN", "hi-IN-MadhurNeural"),
-    "Swara (HI-IN, Hindi Female)":      ("hi-IN", "hi-IN-SwaraNeural"),
-    # Other languages
-    "Diego (ES-US, Spanish Male)":      ("es-US", "es-US-AlonsoNeural"),
-    "Dena (FR-FR, French Female)":      ("fr-FR", "fr-FR-DeniseNeural"),
-    "Conrad (DE-DE, German Male)":      ("de-DE", "de-DE-ConradNeural"),
+    # Hindi (India) - hi-IN
+    "hi-IN-SwaraNeural": {
+        "gender": "Female",
+        "styles": ["cheerful", "empathetic", "newscast"]  # Default voice with styles
+    },
+    "hi-IN-MadhurNeural": {
+        "gender": "Male",
+        "styles": []  # Default only
+    },
+    "hi-IN-AaravNeural": {
+        "gender": "Male",
+        "styles": []  # New voice
+    },
+    "hi-IN-AnanyaNeural": {
+        "gender": "Female",
+        "styles": []  # New voice
+    },
+    "hi-IN-KavyaNeural": {
+        "gender": "Female",
+        "styles": []  # New voice
+    },
+    "hi-IN-KunalNeural": {
+        "gender": "Male",
+        "styles": []  # New voice
+    },
+    "hi-IN-RehaanNeural": {
+        "gender": "Male",
+        "styles": []  # New voice
+    },
+    "hi-IN-AartiNeural": {
+        "gender": "Female",
+        "styles": []
+    },
+    "hi-IN-ArjunNeural": {
+        "gender": "Male",
+        "styles": []
+    },
+
+    # English (India) - en-IN
+    "en-IN-NeerjaNeural": {
+        "gender": "Female",
+        "styles": ["cheerful", "empathetic", "newscast"]  # Default voice with styles
+    },
+    "en-IN-PrabhatNeural": {
+        "gender": "Male",
+        "styles": []  # Default only
+    },
+    "en-IN-AashiNeural": {
+        "gender": "Female",
+        "styles": []  # New voice
+    },
+    "en-IN-AnanyaNeural": {
+        "gender": "Female",
+        "styles": []  # New voice
+    },
+    "en-IN-KavyaNeural": {
+        "gender": "Female",
+        "styles": []  # New voice
+    },
+    "en-IN-AaravNeural": {
+        "gender": "Male",
+        "styles": []  # New voice
+    },
+    "en-IN-KunalNeural": {
+        "gender": "Male",
+        "styles": []  # New voice
+    },
+    # Third new male voice name not specified in search results
 }
+
 
 OPENAI_VOICES = {
     "Alloy (neutral)":  "alloy",
