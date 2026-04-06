@@ -77,23 +77,41 @@ def _openai_key() -> str:
 
 # ── Azure TTS ─────────────────────────────────────────────────────────────────
 
-def azure_tts(text: str, voice_name: str, lang: str, rate: float, pitch: float) -> bytes | None:
-    """Call Azure Cognitive Services TTS. Returns MP3 bytes."""
+def azure_tts(text: str, voice_name: str, lang: str, rate: float, pitch: float, style: str = None) -> bytes | None:
+    """Call Azure Cognitive Services TTS with optional style. Returns MP3 bytes."""
     key    = _azure_key()
     region = _azure_region()
 
-    # Build SSML
+    # Build rate/pitch strings
     rate_str  = f"{int((rate-1)*100):+d}%"
     pitch_str = f"{int(pitch):+d}Hz"
-    ssml = f"""<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='{lang}'>
+    
+    # Escape XML special characters in text
+    import html
+    safe_text = html.escape(text)
+    
+    # Build SSML with optional style
+    if style:
+        ssml = f"""<speak version='1.0' xmlns='[w3.org](http://www.w3.org/2001/10/synthesis)' 
+                   xmlns:mstts='[w3.org](http://www.w3.org/2001/mstts)' xml:lang='{lang}'>
+  <voice name='{voice_name}'>
+    <mstts:express-as style='{style}'>
+      <prosody rate='{rate_str}' pitch='{pitch_str}'>
+        {safe_text}
+      </prosody>
+    </mstts:express-as>
+  </voice>
+</speak>"""
+    else:
+        ssml = f"""<speak version='1.0' xmlns='[w3.org](http://www.w3.org/2001/10/synthesis)' xml:lang='{lang}'>
   <voice name='{voice_name}'>
     <prosody rate='{rate_str}' pitch='{pitch_str}'>
-      {text}
+      {safe_text}
     </prosody>
   </voice>
 </speak>"""
 
-    url = f"https://{region}.tts.speech.microsoft.com/cognitiveservices/v1"
+    url = f"[{region}.tts.speech.microsoft.com](https://{region}.tts.speech.microsoft.com/cognitiveservices/v1)"
     headers = {
         "Ocp-Apim-Subscription-Key": key,
         "Content-Type": "application/ssml+xml",
@@ -113,6 +131,7 @@ def azure_tts(text: str, voice_name: str, lang: str, rate: float, pitch: float) 
     except Exception as e:
         st.error(f"❌ Azure TTS error: {e}")
         return None
+
 
 
 def azure_check_key(key: str, region: str) -> tuple[bool, str]:
@@ -257,33 +276,31 @@ def _render_openai_setup():
 
 def _render_generator(provider: str):
     st.markdown("### 🎛️ Generate Audio")
-
     col_left, col_right = st.columns([1, 1], gap="large")
-
     with col_left:
-        # Voice selector
         if provider == "azure":
-            st.markdown("**Voice** (Hindi + English)")
+            st.markdown("**Voice** (Hindi + English with Styles)")
+            
+            # Filter for Hindi and English only
             filtered_voices = {
-        k: v for k, v in AZURE_VOICES.items()
-        if v[0].startswith("hi-") or v[0].startswith("en-")
-    }
-
+                k: v for k, v in AZURE_VOICES.items()
+                if v[0].startswith("hi-") or v[0].startswith("en-")
+            }
             voice_label = st.selectbox(
                 "Select voice",
                 list(filtered_voices.keys()),
                 index=0,
                 label_visibility="collapsed",
             )
-            lang, voice_name = filtered_voices[voice_label]
-
+            voice_data = filtered_voices[voice_label]
+            lang = voice_data[0]
+            voice_name = voice_data[1]
+            style = voice_data[2] if len(voice_data) > 2 else None
             c1, c2 = st.columns(2)
             with c1:
-                rate = st.slider("Speed", 0.5, 2.0, 1.0, 0.1,
-                                 help="1.0 = normal speed")
+                rate = st.slider("Speed", 0.5, 2.0, 1.0, 0.1, help="1.0 = normal speed")
             with c2:
-                pitch = st.slider("Pitch (Hz)", -20, 20, 0, 1,
-                                  help="0 = default pitch")
+                pitch = st.slider("Pitch (Hz)", -20, 20, 0, 1, help="0 = default pitch"
         else:
             st.markdown("**Voice**")
             voice_label = st.selectbox("Select voice", list(OPENAI_VOICES.keys()),
@@ -329,7 +346,7 @@ def _render_generator(provider: str):
         if gen_btn and text.strip():
             with st.spinner("Generating audio..."):
                 if provider == "azure":
-                    audio_bytes = azure_tts(text, voice_name, lang, rate, pitch)
+                    audio_bytes = azure_tts(text, voice_name, lang, rate, pitch, style)
                 else:
                     audio_bytes = openai_tts(text, voice_name, oai_model)
 
