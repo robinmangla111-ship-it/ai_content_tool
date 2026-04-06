@@ -65,6 +65,8 @@ def call_gemini(prompt: str, max_tokens: int = 900) -> str:
     }
     try:
         r = requests.post(GEMINI_URL, params={"key": api_key}, json=body, timeout=30)
+        st.write("Status Code:", r.status_code)
+        st.write("Response:", r.text)
         r.raise_for_status()
         return r.json()["candidates"][0]["content"]["parts"][0]["text"]
     except Exception as e:
