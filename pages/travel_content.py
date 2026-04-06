@@ -1,25 +1,32 @@
 """
-🏖️ AI Travel Content Creator
-===============================
-- AI generates the background image from your prompt (Hugging Face FLUX.1-schnell)
-- LLM enhances your prompt for better image quality (Groq - already in app)
-- Pillow composites: logo, cert badge, text, social links
-- Single banner OR multi-screen video slideshow (20-30s animated GIF)
-- Reusable brand kit: logo + cert badge saved in session
-- All platforms: YouTube, Instagram, Facebook, WhatsApp
-- 100% free tools
+✈ AI Travel Content Creator
+=================================
+FREE tools used:
+  • Hugging Face FLUX.1-schnell  → AI background image generation
+  • Groq (llama-3.3-70b)         → Prompt enhancement + copy generation
+  • Gemini 2.5 Flash (fallback)  → Copy generation if no Groq key
+  • Pillow                       → Banner compositing, GIF creation
+
+Features:
+  • Single banner for any platform
+  • Multi-scene animated GIF slideshow (20-30s) → import to CapCut for MP4
+  • Bulk export ZIP (all platform sizes)
+  • Persistent brand kit: logo, cert badge, social links
+  • Full copy generation: title, subtitle, highlights, YouTube/Insta/FB/WA captions
 """
 
 import streamlit as st
-import sys, os, io, json, time, base64, zipfile
+import sys, os, io, json, time, base64, zipfile, re
 import requests
-from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+from PIL import Image, ImageDraw, ImageFont
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# ── Key helpers ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# KEY HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _get(sk, sec, env):
     v = st.session_state.get(sk, "").strip()
@@ -31,41 +38,221 @@ def _get(sk, sec, env):
         pass
     return os.getenv(env, "").strip()
 
-def _hf_key():   return _get("hf_token",  "HF_TOKEN",      "HF_TOKEN")
-def _llm_key():  return _get("api_key",   "GROQ_API_KEY",  "GROQ_API_KEY")
+def _hf_key():     return _get("hf_token",     "HF_TOKEN",       "HF_TOKEN")
+def _groq_key():   return _get("groq_api_key", "GROQ_API_KEY",   "GROQ_API_KEY")
+def _gemini_key(): return _get("gemini_key",   "GEMINI_API_KEY", "GEMINI_API_KEY")
 
-# ── Platform sizes ────────────────────────────────────────────────────────────
+def _llm_available(): return bool(_groq_key() or _gemini_key())
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PLATFORM SIZES
+# ─────────────────────────────────────────────────────────────────────────────
 
 PLATFORMS = {
-    "Instagram Post (1:1)":          (1080, 1080),
-    "Instagram / Reels Story (9:16)": (1080, 1920),
-    "YouTube Thumbnail (16:9)":       (1280,  720),
-    "YouTube Shorts (9:16)":          (1080, 1920),
-    "Facebook Post (1.91:1)":         (1200,  630),
-    "WhatsApp Status (9:16)":         (1080, 1920),
-    "Twitter/X Post (16:9)":          (1200,  675),
-    "LinkedIn Post (1.91:1)":         (1200,  628),
+    "Instagram Post (1:1)            1080×1080": (1080, 1080),
+    "Instagram / Reels Story (9:16)  1080×1920": (1080, 1920),
+    "YouTube Thumbnail (16:9)        1280×720":  (1280,  720),
+    "YouTube Shorts (9:16)           1080×1920": (1080, 1920),
+    "Facebook Post (1.91:1)          1200×630":  (1200,  630),
+    "Facebook Cover                  820×312":   ( 820,  312),
+    "WhatsApp Status (9:16)          1080×1920": (1080, 1920),
+    "Twitter/X Post (16:9)           1200×675":  (1200,  675),
+    "LinkedIn Banner                 1584×396":  (1584,  396),
 }
 
-# ── Travel image styles ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE STYLES  (appended to prompts)
+# ─────────────────────────────────────────────────────────────────────────────
 
 IMG_STYLES = {
     "📸 Photorealistic":      "ultra-realistic travel photography, golden hour lighting, professional DSLR, 8k, sharp",
     "🎨 Cinematic":           "cinematic wide shot, dramatic lighting, film grain, movie still, anamorphic lens",
-    "✏️ Illustration":        "digital illustration, vibrant colors, travel poster style, flat design with depth",
-    "🌅 Aerial / Drone":      "aerial drone photography, bird's eye view, stunning landscape, vivid colors",
+    "🌅 Aerial / Drone":      "aerial drone photography, bird's eye view, stunning landscape, vivid colors, 8k",
     "🖼️ Vintage Poster":      "vintage travel poster, retro art deco style, bold colors, classic typography aesthetic",
+    "✏️ Illustration":        "digital illustration, vibrant colors, travel poster style, flat design with depth",
     "🌙 Night / Moody":       "night photography, city lights, long exposure, moody atmosphere, neon reflections",
     "🏺 Cultural / Artistic": "cultural artistic style, folk art inspired, rich textures, warm earthy tones",
 }
 
-# ── Font loader ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM HELPERS  (Groq preferred → Gemini fallback)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _call_groq(system: str, user: str, max_tokens: int = 800) -> str:
+    key = _groq_key()
+    if not key: return ""
+    try:
+        from groq import Groq
+        client = Groq(api_key=key)
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role":"system","content":system},{"role":"user","content":user}],
+            max_tokens=max_tokens, temperature=0.75,
+        )
+        return resp.choices[0].message.content.strip()
+    except Exception as e:
+        st.warning(f"Groq error: {e}")
+        return ""
+
+
+def _call_gemini(prompt: str, max_tokens: int = 800) -> str:
+    key = _gemini_key()
+    if not key: return ""
+    url  = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
+    body = {
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": max_tokens, "temperature": 0.8},
+    }
+    try:
+        r = requests.post(url, params={"key": key}, json=body, timeout=30)
+        r.raise_for_status()
+        return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    except Exception as e:
+        st.warning(f"Gemini error: {e}")
+        return ""
+
+
+def _llm(system: str, user: str, max_tokens: int = 800) -> str:
+    """Try Groq first, fall back to Gemini."""
+    result = _call_groq(system, user, max_tokens)
+    if not result:
+        result = _call_gemini(f"{system}\n\n{user}", max_tokens)
+    return result
+
+
+def _parse_json(raw: str):
+    clean = re.sub(r"```(?:json)?|```", "", raw).strip()
+    start = min(
+        (clean.find("{") if "{" in clean else len(clean)),
+        (clean.find("[") if "[" in clean else len(clean)),
+    )
+    return json.loads(clean[start:])
+
+
+# ── LLM tasks ─────────────────────────────────────────────────────────────────
+
+def enhance_image_prompt(desc: str, style: str, destination: str) -> str:
+    system = (
+        "You are an expert Stable Diffusion / FLUX image prompt writer for travel photography. "
+        "Turn the description into a rich visual prompt. "
+        "RULES: No people. No text. No logos. Just scenery/place/atmosphere. "
+        "Specific about lighting, time of day, composition, colors. "
+        "Output ONLY the prompt, no preamble, max 100 words."
+    )
+    user = (
+        f"Destination: {destination}\n"
+        f"Description: {desc}\n"
+        f"Style: {style}\n"
+        "Write the image generation prompt:"
+    )
+    result = _llm(system, user, max_tokens=150)
+    return result or f"{desc}, {destination}, {style}, no text, no watermark"
+
+
+def generate_all_copy(destination: str, package_type: str,
+                       duration: str, extra: str) -> dict:
+    system = (
+        "You are a top travel marketing copywriter for Indian travel agencies. "
+        "Return ONLY valid JSON, no markdown fences, no preamble."
+    )
+    user = (
+        f"Destination: {destination}\n"
+        f"Package type: {package_type}\nDuration: {duration}\nDetails: {extra or 'none'}\n\n"
+        "Return JSON with keys: title, subtitle, package_name, price_hint, cta, "
+        "highlights (array of 5), youtube_title, instagram_caption, facebook_caption, "
+        "whatsapp_status, short_video_script (3 punchy sentences for 30-sec reel), "
+        "scene_prompts (array of 5 image scene descriptions for AI image generation)."
+    )
+    raw = _llm(system, user, max_tokens=1000)
+    if not raw: return {}
+    try:
+        return _parse_json(raw)
+    except Exception:
+        return {}
+
+
+def generate_scene_captions(pkg_name: str, scenes: list, n: int) -> list:
+    system = (
+        "Generate short punchy captions for travel video slides. "
+        "Each max 6 words with 1 emoji. Output ONLY a JSON array of strings."
+    )
+    user = f"Package: {pkg_name}\nScenes: {scenes}\nGenerate {n} captions:"
+    raw = _llm(system, user, max_tokens=200)
+    if not raw:
+        return [f"✨ Scene {i+1}" for i in range(n)]
+    try:
+        data = _parse_json(raw)
+        return [str(c) for c in data[:n]]
+    except Exception:
+        return [s[:30] for s in scenes[:n]]
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AI IMAGE GENERATION  (Hugging Face FLUX.1-schnell — free)
+# ─────────────────────────────────────────────────────────────────────────────
+
+HF_MODEL_URL = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
+
+
+def generate_ai_image(prompt: str, width: int, height: int,
+                       retry: bool = True) -> Image.Image | None:
+    """
+    Generate image via HF Inference API. Returns PIL Image or None (→ gradient fallback).
+    Free tier: ~50-100 images/month.
+    """
+    hf_key = _hf_key()
+    if not hf_key:
+        return None
+
+    headers = {"Authorization": f"Bearer {hf_key}"}
+    payload = {
+        "inputs": prompt,
+        "parameters": {
+            "width":  min(width,  1024),
+            "height": min(height, 1024),
+            "num_inference_steps": 4,
+        }
+    }
+
+    def _parse_img(r):
+        img = Image.open(io.BytesIO(r.content)).convert("RGBA")
+        ratio = max(width / img.width, height / img.height)
+        nw, nh = int(img.width*ratio), int(img.height*ratio)
+        img = img.resize((nw, nh), Image.LANCZOS)
+        l = (nw-width)//2; t = (nh-height)//2
+        return img.crop((l, t, l+width, t+height))
+
+    try:
+        r = requests.post(HF_MODEL_URL, headers=headers, json=payload, timeout=90)
+        ct = r.headers.get("content-type","")
+        if r.status_code == 200 and ct.startswith("image"):
+            return _parse_img(r)
+        elif r.status_code == 503 and retry:
+            st.toast("⏳ HF model loading — retrying in 15s…")
+            time.sleep(15)
+            r2 = requests.post(HF_MODEL_URL, headers=headers, json=payload, timeout=90)
+            if r2.status_code == 200 and r2.headers.get("content-type","").startswith("image"):
+                return _parse_img(r2)
+        elif r.status_code == 401:
+            st.error("❌ Invalid HF token. Check your token in Brand Kit.")
+        elif r.status_code == 429:
+            st.warning("⚠️ HF free quota reached — using gradient background.")
+        else:
+            st.warning(f"HF API {r.status_code} — using gradient background.")
+        return None
+    except Exception as e:
+        st.warning(f"Image gen failed ({e}) — using gradient background.")
+        return None
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FONT LOADER
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _font(size: int, bold: bool = False):
     paths = [
         f"/usr/share/fonts/truetype/dejavu/DejaVuSans{'-Bold' if bold else ''}.ttf",
         f"/usr/share/fonts/truetype/liberation/LiberationSans{'-Bold' if bold else '-Regular'}.ttf",
         f"/usr/share/fonts/truetype/ubuntu/Ubuntu-{'B' if bold else 'R'}.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
     ]
     for p in paths:
         if os.path.exists(p):
@@ -73,352 +260,192 @@ def _font(size: int, bold: bool = False):
             except: pass
     return ImageFont.load_default()
 
-# ── LLM prompt enhancer ───────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAGE COMPOSITING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
-def enhance_prompt(user_prompt: str, style_suffix: str, destination: str) -> str:
-    """Use Groq to turn a simple description into a rich image generation prompt."""
-    key = _llm_key()
-    if not key:
-        return f"{user_prompt}, {destination}, {style_suffix}, no text, no watermark"
-
-    system = (
-        "You are an expert at writing Stable Diffusion / FLUX image generation prompts. "
-        "Turn the user's travel description into a rich, detailed visual prompt. "
-        "RULES: No people in the image. No text. No logos. Just scenery/place/atmosphere. "
-        "Be very specific about lighting, time of day, composition, colors. "
-        "Output ONLY the prompt, no explanation, max 120 words."
-    )
-    user = (
-        f"Travel destination: {destination}\n"
-        f"User description: {user_prompt}\n"
-        f"Style requirement: {style_suffix}\n"
-        "Write the image generation prompt:"
-    )
-    try:
-        from groq import Groq
-        client = Groq(api_key=key)
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role":"system","content":system},{"role":"user","content":user}],
-            max_tokens=200, temperature=0.7,
-        )
-        return resp.choices[0].message.content.strip()
-    except Exception:
-        return f"{user_prompt}, {destination}, {style_suffix}, no text, no watermark"
-
-
-def generate_scene_captions(package_name: str, scenes: list[str], n: int) -> list[str]:
-    """Generate short captions for each video scene."""
-    key = _llm_key()
-    if not key:
-        return scenes[:n] if scenes else [f"Scene {i+1}" for i in range(n)]
-
-    system = (
-        "Generate short, punchy captions for travel video slides. "
-        "Each caption max 6 words. Output ONLY a JSON array of strings, nothing else."
-    )
-    user = f"Package: {package_name}\nScenes: {scenes}\nGenerate {n} captions (one per scene):"
-    try:
-        from groq import Groq
-        client = Groq(api_key=key)
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role":"system","content":system},{"role":"user","content":user}],
-            max_tokens=200, temperature=0.8,
-        )
-        raw = resp.choices[0].message.content.strip()
-        import re
-        m = re.search(r'\[.*?\]', raw, re.DOTALL)
-        return json.loads(m.group()) if m else scenes[:n]
-    except Exception:
-        return scenes[:n] if scenes else [f"Scene {i+1}" for i in range(n)]
-
-# ── AI Image Generation via HF Inference API ─────────────────────────────────
-
-def generate_ai_image(prompt: str, width: int, height: int) -> Image.Image | None:
-    """
-    Generate image via Hugging Face Inference API (FLUX.1-schnell).
-    Free tier: ~100 small credits/month. Very fast model.
-    Falls back to gradient placeholder if no key or quota exceeded.
-    """
-    hf_key = _hf_key()
-    if not hf_key:
-        return None   # caller will use gradient fallback
-
-    # HF Inference API endpoint for FLUX.1-schnell
-    url = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
-    headers = {"Authorization": f"Bearer {hf_key}"}
-
-    # HF returns image at 1024x1024 or similar — we resize after
-    payload = {
-        "inputs": prompt,
-        "parameters": {
-            "width":  min(width,  1024),
-            "height": min(height, 1024),
-            "num_inference_steps": 4,   # schnell = 4 steps is enough
-        }
-    }
-
-    try:
-        r = requests.post(url, headers=headers, json=payload, timeout=90)
-        if r.status_code == 200 and r.headers.get("content-type","").startswith("image"):
-            img = Image.open(io.BytesIO(r.content)).convert("RGBA")
-            # Resize to target canvas (cover crop)
-            ratio  = max(width / img.width, height / img.height)
-            nw, nh = int(img.width * ratio), int(img.height * ratio)
-            img    = img.resize((nw, nh), Image.LANCZOS)
-            left   = (nw - width)  // 2
-            top    = (nh - height) // 2
-            return img.crop((left, top, left + width, top + height))
-        elif r.status_code == 503:
-            st.warning("⏳ HF model loading (cold start) — retrying in 15s...")
-            time.sleep(15)
-            r2 = requests.post(url, headers=headers, json=payload, timeout=90)
-            if r2.status_code == 200:
-                img = Image.open(io.BytesIO(r2.content)).convert("RGBA")
-                ratio  = max(width / img.width, height / img.height)
-                nw, nh = int(img.width * ratio), int(img.height * ratio)
-                img    = img.resize((nw, nh), Image.LANCZOS)
-                left   = (nw - width) // 2
-                top    = (nh - height) // 2
-                return img.crop((left, top, left + width, top + height))
-        elif r.status_code == 401:
-            st.error("❌ Invalid HF token (401). Check your Hugging Face API token.")
-        elif r.status_code == 429:
-            st.warning("⚠️ HF free quota reached. Using gradient background instead.")
-        else:
-            st.warning(f"HF API returned {r.status_code}. Using gradient background.")
-        return None
-    except Exception as e:
-        st.warning(f"Image generation failed ({e}). Using gradient background.")
-        return None
-
-
-def _gradient_bg(w: int, h: int, c1=(20,40,80), c2=(80,20,60)) -> Image.Image:
-    img  = Image.new("RGBA", (w, h))
+def _gradient_bg(w, h, c1=(15,40,80), c2=(60,15,50)):
+    img = Image.new("RGBA", (w, h))
     draw = ImageDraw.Draw(img)
     for y in range(h):
         t = y / h
-        r = int(c1[0] + (c2[0]-c1[0])*t)
-        g = int(c1[1] + (c2[1]-c1[1])*t)
-        b = int(c1[2] + (c2[2]-c1[2])*t)
-        draw.line([(0,y),(w,y)], fill=(r,g,b,255))
+        draw.line([(0,y),(w,y)], fill=(
+            int(c1[0]+(c2[0]-c1[0])*t),
+            int(c1[1]+(c2[1]-c1[1])*t),
+            int(c1[2]+(c2[2]-c1[2])*t), 255))
     return img
 
-# ── Compositing helpers ───────────────────────────────────────────────────────
 
-def _overlay(img: Image.Image, alpha: int = 140) -> Image.Image:
-    """Dark overlay for text readability."""
-    ov = Image.new("RGBA", img.size, (0, 0, 0, alpha))
+def _overlay(img, alpha=140):
+    ov = Image.new("RGBA", img.size, (0,0,0,alpha))
     return Image.alpha_composite(img.convert("RGBA"), ov)
 
 
 def _wrap(text, font, max_w, draw):
-    words = text.split()
-    lines, line = [], ""
-    for w in words:
-        test = (line + " " + w).strip()
+    words = text.split(); lines = []; line = ""
+    for word in words:
+        test = (line+" "+word).strip()
         if draw.textbbox((0,0), test, font=font)[2] <= max_w:
             line = test
         else:
             if line: lines.append(line)
-            line = w
+            line = word
     if line: lines.append(line)
     return "\n".join(lines)
 
 
-def _shadow_text(draw, xy, text, font, fill, shadow=3):
-    draw.text((xy[0]+shadow, xy[1]+shadow), text, font=font, fill=(0,0,0,160))
+def _shadow(draw, xy, text, font, fill, s=3):
+    draw.text((xy[0]+s, xy[1]+s), text, font=font, fill=(0,0,0,165))
     draw.text(xy, text, font=font, fill=fill)
 
 
 def _pill(draw, x, y, text, font, bg, fg, pad=14):
-    bb   = draw.textbbox((0,0), text, font=font)
-    tw   = bb[2]-bb[0]; th = bb[3]-bb[1]
-    r    = (th + pad) // 2
-    draw.rounded_rectangle([x, y, x+tw+pad*2, y+th+pad], radius=r, fill=bg)
+    bb = draw.textbbox((0,0), text, font=font)
+    tw, th = bb[2]-bb[0], bb[3]-bb[1]
+    draw.rounded_rectangle([x,y,x+tw+pad*2,y+th+pad], radius=(th+pad)//2, fill=bg)
     draw.text((x+pad, y+pad//2), text, font=font, fill=fg)
-    return x + tw + pad*2
+    return x+tw+pad*2
 
 
-def _paste_asset(canvas: Image.Image, asset_bytes: bytes,
-                 position: str, max_px: int, bottom_reserve: int = 56) -> Image.Image:
-    """Paste logo or cert badge at given position."""
-    asset = Image.open(io.BytesIO(asset_bytes)).convert("RGBA")
-    r     = min(max_px / asset.width, max_px / asset.height)
-    nw, nh = int(asset.width*r), int(asset.height*r)
-    asset  = asset.resize((nw, nh), Image.LANCZOS)
-    W, H   = canvas.size
-    m = 20
-    pos_map = {
-        "Top Left":     (m, m),
-        "Top Right":    (W-nw-m, m),
-        "Bottom Left":  (m, H-nh-m-bottom_reserve),
-        "Bottom Right": (W-nw-m, H-nh-m-bottom_reserve),
-    }
-    x, y = pos_map.get(position, (W-nw-m, m))
-    canvas.paste(asset, (x, y), asset)
-    return canvas
-
-
-def _social_bar(draw, w, h, fb, insta, web, accent_rgb, font):
-    bh = 56
-    draw.rectangle([0, h-bh, w, h], fill=(0,0,0,170))
+def _social_bar(draw, w, h, fb, insta, web, accent, font):
+    bh = 56; by = h-bh
+    draw.rectangle([0,by,w,h], fill=(0,0,0,170))
     items = []
     if fb:    items.append(f"f  {fb}")
     if insta: items.append(f"@  {insta}")
-    if web:   items.append(f"  {web}")
+    if web:   items.append(f"🌐 {web}")
     if not items: return
-    line  = "   ·   ".join(items)
-    bb    = draw.textbbox((0,0), line, font=font)
-    tw    = bb[2]-bb[0]
-    tx    = (w - tw) // 2
-    ty    = h - bh + (bh - (bb[3]-bb[1])) // 2
-    draw.text((tx, ty), line, font=font, fill=accent_rgb+(255,))
+    line = "   ·   ".join(items)
+    bb = draw.textbbox((0,0), line, font=font)
+    tw = bb[2]-bb[0]
+    draw.text(((w-tw)//2, by+(bh-(bb[3]-bb[1]))//2), line, font=font, fill=accent+(255,))
 
-# ── Full banner composer ──────────────────────────────────────────────────────
+
+def _paste_asset(canvas, asset_bytes, position, max_px, bottom_res=60):
+    asset = Image.open(io.BytesIO(asset_bytes)).convert("RGBA")
+    r = min(max_px/asset.width, max_px/asset.height)
+    nw, nh = int(asset.width*r), int(asset.height*r)
+    asset = asset.resize((nw,nh), Image.LANCZOS)
+    W, H = canvas.size; m = 20
+    pos_map = {
+        "Top Left":    (m, m), "Top Right":    (W-nw-m, m),
+        "Bottom Left": (m, H-nh-m-bottom_res),
+        "Bottom Right":(W-nw-m, H-nh-m-bottom_res),
+    }
+    x, y = pos_map.get(position, (W-nw-m, m))
+    canvas.paste(asset, (x,y), asset)
+    return canvas
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MAIN BANNER COMPOSER
+# ─────────────────────────────────────────────────────────────────────────────
 
 def compose_banner(
-    bg_img: Image.Image | None,    # already sized or None → gradient
-    w: int, h: int,
-    # text fields
-    package_name: str = "",
-    headline: str = "",
-    subheadline: str = "",
-    highlights: list[str] = None,
-    price: str = "",
-    cta: str = "",
-    caption: str = "",             # for video frames
-    # brand
-    logo_bytes: bytes | None = None,
-    logo_pos: str = "Top Right",
-    cert_bytes: bytes | None = None,
-    # social
-    fb: str = "", insta: str = "", web: str = "",
-    # style
-    overlay_alpha: int = 140,
-    accent: tuple = (255, 200, 50),
-    text_color: tuple = (255, 255, 255),
-    show_price_pill: bool = True,
+    bg_img, w, h,
+    package_name="", headline="", subheadline="",
+    highlights=None, price="", cta="",
+    slide_caption="", slide_num=None,
+    logo_bytes=None, logo_pos="Top Right",
+    cert_bytes=None,
+    fb="", insta="", web="",
+    overlay_alpha=140,
+    accent=(255,200,50),
+    text_color=(255,255,255),
 ) -> Image.Image:
 
     highlights = highlights or []
 
-    # Background
-    if bg_img is None:
-        canvas = _gradient_bg(w, h, (15,40,80), (60,15,50))
-    else:
-        canvas = bg_img.copy().convert("RGBA")
+    canvas = bg_img.copy().convert("RGBA") if bg_img else _gradient_bg(w, h)
     canvas = _overlay(canvas, overlay_alpha)
-
     draw   = ImageDraw.Draw(canvas)
-    sc     = min(w, h) / 1080       # scale factor
-    margin = int(55 * sc)
-    mw     = w - margin * 2        # max text width
-    cy     = int(55 * sc)
 
-    # Fonts
-    fT  = _font(int(74*sc), bold=True)   # title
-    fS  = _font(int(40*sc), bold=False)  # subtitle
-    fH  = _font(int(30*sc), bold=False)  # highlights
-    fP  = _font(int(58*sc), bold=True)   # price
-    fC  = _font(int(36*sc), bold=True)   # CTA
-    fSm = _font(int(24*sc), bold=False)  # small / social
+    sc     = min(w,h)/1080
+    margin = int(55*sc); mw = w-margin*2
+    cy     = int(55*sc)
+    white  = text_color+(255,); acc4 = accent+(255,)
 
-    white  = text_color + (255,)
-    accent4= accent + (255,)
+    fT  = _font(int(74*sc), bold=True)
+    fS  = _font(int(40*sc))
+    fH  = _font(int(30*sc))
+    fP  = _font(int(58*sc), bold=True)
+    fC  = _font(int(36*sc), bold=True)
+    fSm = _font(int(24*sc))
+    fSl = _font(int(54*sc), bold=True)
+    fNm = _font(int(22*sc))
 
-    # Package name pill
-    if package_name:
-        _pill(draw, margin, cy,
-              f"  ✈  {package_name.upper()}  ", fSm,
-              accent+(200,), (10,10,10,255), pad=16)
-        cy += int(56*sc)
-        draw.rectangle([margin, cy, margin+int(70*sc), cy+4], fill=accent4)
-        cy += int(20*sc)
+    # ── VIDEO SLIDE MODE ─────────────────────────────────────────────────────
+    if slide_caption:
+        if slide_num:
+            nb = draw.textbbox((0,0), slide_num, font=fNm)
+            draw.text((w-margin-(nb[2]-nb[0]), int(28*sc)), slide_num,
+                      font=fNm, fill=accent+(200,))
+        wrapped = _wrap(slide_caption, fSl, mw, draw)
+        bb = draw.multiline_textbbox((0,0), wrapped, font=fSl)
+        tx = (w-(bb[2]-bb[0]))//2; ty = (h-(bb[3]-bb[1]))//2-int(20*sc)
+        _shadow(draw, (tx,ty), wrapped, fSl, white, s=4)
+        if package_name:
+            pb = draw.textbbox((0,0), package_name, font=fSm)
+            px = (w-(pb[2]-pb[0])-28)//2
+            _pill(draw, px, h-int(115*sc), package_name, fSm,
+                  accent+(210,), (15,15,15,255), pad=14)
+    else:
+        # ── NORMAL BANNER ────────────────────────────────────────────────────
+        if package_name:
+            _pill(draw, margin, cy, f"  ✈  {package_name.upper()}  ",
+                  fSm, accent+(205,), (10,10,10,255), pad=16)
+            cy += int(58*sc)
+            draw.rectangle([margin,cy,margin+int(70*sc),cy+4], fill=acc4)
+            cy += int(20*sc)
 
-    # Headline
-    if headline:
-        wrapped = _wrap(headline, fT, mw, draw)
-        _shadow_text(draw, (margin, cy), wrapped, fT, white)
-        bb = draw.multiline_textbbox((margin,cy), wrapped, font=fT)
-        cy += bb[3]-bb[1] + int(14*sc)
+        if headline:
+            wrapped = _wrap(headline, fT, mw, draw)
+            _shadow(draw, (margin,cy), wrapped, fT, white)
+            bb = draw.multiline_textbbox((margin,cy), wrapped, font=fT)
+            cy += bb[3]-bb[1]+int(14*sc)
 
-    # Subheadline
-    if subheadline:
-        wrapped = _wrap(subheadline, fS, mw, draw)
-        _shadow_text(draw, (margin, cy), wrapped, fS, accent4)
-        bb = draw.multiline_textbbox((margin,cy), wrapped, font=fS)
-        cy += bb[3]-bb[1] + int(28*sc)
+        if subheadline:
+            wrapped = _wrap(subheadline, fS, mw, draw)
+            _shadow(draw, (margin,cy), wrapped, fS, acc4)
+            bb = draw.multiline_textbbox((margin,cy), wrapped, font=fS)
+            cy += bb[3]-bb[1]+int(28*sc)
 
-    # Highlights
-    for hl in highlights[:6]:
-        line = f"  ✓  {hl}"
-        _shadow_text(draw, (margin, cy), line, fH, white)
-        bb = draw.textbbox((margin,cy), line, font=fH)
-        cy += bb[3]-bb[1] + int(6*sc)
-    if highlights:
-        cy += int(18*sc)
+        for hl in highlights[:6]:
+            line = f"  ✓  {hl}"
+            _shadow(draw, (margin,cy), line, fH, white)
+            bb = draw.textbbox((margin,cy), line, font=fH)
+            cy += bb[3]-bb[1]+int(7*sc)
+        if highlights: cy += int(18*sc)
 
-    # Price
-    if price and show_price_pill:
-        _shadow_text(draw, (margin, cy), f"From  {price}", fP, accent4)
-        bb = draw.textbbox((margin,cy), f"From  {price}", font=fP)
-        cy += bb[3]-bb[1] + int(22*sc)
+        if price:
+            _shadow(draw, (margin,cy), f"From  {price}", fP, acc4)
+            bb = draw.textbbox((margin,cy), f"From  {price}", font=fP)
+            cy += bb[3]-bb[1]+int(22*sc)
 
-    # CTA
-    if cta:
-        _pill(draw, margin, cy, f"  {cta}  ", fC,
-              accent+(230,), (20,20,20,255), pad=20)
+        if cta:
+            _pill(draw, margin, cy, f"  {cta}  ", fC, accent+(230,), (20,20,20,255), pad=20)
 
-    # Caption (for video frames — shown at bottom centre)
-    if caption:
-        bb   = draw.textbbox((0,0), caption, font=fC)
-        tw   = bb[2]-bb[0]
-        tx   = (w - tw) // 2
-        ty   = h - int(120*sc)
-        draw.rounded_rectangle(
-            [tx-20, ty-10, tx+tw+20, ty+(bb[3]-bb[1])+10],
-            radius=10, fill=(0,0,0,160)
-        )
-        draw.text((tx, ty), caption, font=fC, fill=white)
-
-    # Social bar
     _social_bar(draw, w, h, fb, insta, web, accent, fSm)
 
-    # Logo
     if logo_bytes:
-        canvas = _paste_asset(canvas, logo_bytes, logo_pos,
-                              max_px=int(130*sc), bottom_reserve=60)
-
-    # Cert badge (always bottom-left)
+        canvas = _paste_asset(canvas, logo_bytes, logo_pos, int(130*sc), bottom_res=62)
     if cert_bytes:
-        canvas = _paste_asset(canvas, cert_bytes, "Bottom Left",
-                              max_px=int(90*sc), bottom_reserve=60)
+        canvas = _paste_asset(canvas, cert_bytes, "Bottom Left", int(90*sc), bottom_res=62)
 
     return canvas.convert("RGB")
 
 
-def img_bytes(img: Image.Image, fmt="PNG") -> bytes:
-    buf = io.BytesIO()
-    img.save(buf, format=fmt, quality=95)
-    return buf.getvalue()
+def img_bytes(img, fmt="PNG") -> bytes:
+    buf = io.BytesIO(); img.save(buf, format=fmt, quality=95); return buf.getvalue()
 
 
-def make_gif(frames: list[Image.Image], fps_duration_ms: int = 2500) -> bytes:
-    """Convert list of PIL Images → animated GIF bytes."""
-    # Resize to 540-wide for manageable file size
+def make_gif(frames, ms=2500) -> bytes:
     thumbs = []
     for f in frames:
-        w, h = f.size
-        scale = 540 / w
-        thumbs.append(f.resize((int(w*scale), int(h*scale)), Image.LANCZOS))
+        scale = 540 / f.width
+        thumbs.append(f.resize((int(f.width*scale), int(f.height*scale)), Image.LANCZOS))
     buf = io.BytesIO()
-    thumbs[0].save(
-        buf, format="GIF", save_all=True,
-        append_images=thumbs[1:],
-        duration=fps_duration_ms, loop=0, optimize=True,
-    )
+    thumbs[0].save(buf, format="GIF", save_all=True,
+                   append_images=thumbs[1:], duration=ms, loop=0, optimize=True)
     return buf.getvalue()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -426,503 +453,580 @@ def make_gif(frames: list[Image.Image], fps_duration_ms: int = 2500) -> bytes:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render():
-    st.markdown("# 🏖️ AI Travel Content Creator")
-    st.markdown(
-        "Describe your travel package → AI generates the scene → "
-        "Your logo & branding composited automatically → Download for any platform."
-    )
 
-    # ── BRAND KIT (persistent in session) ────────────────────────────────────
-    with st.expander("🏷️ Brand Kit — Logo, Cert & Social Links (saved for all content)", expanded=False):
-        bk_col1, bk_col2, bk_col3 = st.columns(3)
-        with bk_col1:
-            st.markdown("**Company Logo**")
-            logo_up = st.file_uploader("Upload logo (PNG transparent preferred)",
-                                        type=["png","jpg","jpeg"], key="bk_logo")
+    # ── CSS ───────────────────────────────────────────────────────────────────
+    st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@400;500;600&display=swap');
+    .tc-hero { font-family:'Syne',sans-serif; font-size:2.3rem; font-weight:800;
+               background:linear-gradient(135deg,#f59e0b,#ef4444,#8b5cf6);
+               -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+    .tc-sub  { font-family:'Inter',sans-serif; color:#94a3b8; font-size:.95rem; margin-top:2px; }
+    .badge   { display:inline-block; padding:3px 12px; border-radius:20px; font-size:.72rem;
+               font-weight:700; letter-spacing:.05em; margin-right:6px; margin-bottom:10px; }
+    .b-free  { background:linear-gradient(135deg,#16a34a,#0284c7); color:#fff; }
+    .b-ai    { background:linear-gradient(135deg,#7c3aed,#db2777); color:#fff; }
+    .copy-box{ background:#1e293b; border:1px solid #334155; border-radius:10px;
+               padding:13px 17px; font-family:'Inter',sans-serif; font-size:.84rem;
+               color:#e2e8f0; line-height:1.65; white-space:pre-wrap; margin-bottom:8px; }
+    .copy-lbl{ font-size:.68rem; font-weight:700; letter-spacing:.09em;
+               color:#64748b; text-transform:uppercase; margin-bottom:3px; }
+    .empty   { border:1px dashed #334155; border-radius:14px;
+               padding:70px 20px; text-align:center; }
+    .e-icon  { font-size:3rem; }
+    .e-text  { color:#64748b; margin-top:10px; font-size:.88rem; }
+    .key-box { background:#0f1f1a; border:1px solid #22c55e55;
+               border-radius:10px; padding:14px 18px; line-height:1.8; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<span class="badge b-ai">✦ AI IMAGE GEN</span>'
+                '<span class="badge b-free">100% FREE TOOLS</span>', unsafe_allow_html=True)
+    st.markdown('<div class="tc-hero">✈ AI Travel Content Creator</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="tc-sub">Describe your package → AI generates the scene → '
+        'brand composited → banners & video for every platform</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown("---")
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BRAND KIT SIDEBAR
+    # ─────────────────────────────────────────────────────────────────────────
+    with st.expander("🏷️ Brand Kit — Logo · Cert Badge · Social Links · API Keys", expanded=False):
+        k1, k2, k3 = st.columns(3)
+
+        with k1:
+            st.markdown("**🖼️ Company Logo**")
+            logo_up = st.file_uploader("PNG (transparent)", type=["png","jpg","jpeg"], key="bk_logo")
             if logo_up:
                 st.session_state["brand_logo"] = logo_up.read()
-                st.image(st.session_state["brand_logo"], width=120)
-            elif st.session_state.get("brand_logo"):
-                st.image(st.session_state["brand_logo"], width=120, caption="Saved ✓")
+            if st.session_state.get("brand_logo"):
+                st.image(st.session_state["brand_logo"], width=110,
+                         caption="✓ Saved" if not logo_up else "New logo")
 
-        with bk_col2:
-            st.markdown("**Certification Badge**")
-            cert_up = st.file_uploader("Upload cert/award badge",
-                                        type=["png","jpg","jpeg"], key="bk_cert")
+        with k2:
+            st.markdown("**🏅 Certification Badge**")
+            cert_up = st.file_uploader("Award / cert badge", type=["png","jpg","jpeg"], key="bk_cert")
             if cert_up:
                 st.session_state["brand_cert"] = cert_up.read()
-                st.image(st.session_state["brand_cert"], width=80)
-            elif st.session_state.get("brand_cert"):
-                st.image(st.session_state["brand_cert"], width=80, caption="Saved ✓")
+            if st.session_state.get("brand_cert"):
+                st.image(st.session_state["brand_cert"], width=80,
+                         caption="✓ Saved" if not cert_up else "New badge")
 
-        with bk_col3:
-            st.markdown("**Social Links**")
-            fb_val    = st.text_input("Facebook page",    value=st.session_state.get("bk_fb",""),    key="_bk_fb")
-            insta_val = st.text_input("Instagram handle", value=st.session_state.get("bk_insta",""), key="_bk_insta")
-            web_val   = st.text_input("Website",          value=st.session_state.get("bk_web",""),   key="_bk_web")
-            if st.button("💾 Save Brand Kit"):
-                st.session_state["bk_fb"]    = fb_val
-                st.session_state["bk_insta"] = insta_val
-                st.session_state["bk_web"]   = web_val
-                st.success("Brand kit saved for this session!")
+        with k3:
+            st.markdown("**🔗 Social Links**")
+            fb_v    = st.text_input("Facebook page",    value=st.session_state.get("bk_fb",""),    key="_fb")
+            insta_v = st.text_input("Instagram handle", value=st.session_state.get("bk_insta",""), key="_ig")
+            web_v   = st.text_input("Website",          value=st.session_state.get("bk_web",""),   key="_wb")
+            if st.button("💾 Save", use_container_width=True):
+                st.session_state.update(bk_fb=fb_v, bk_insta=insta_v, bk_web=web_v)
+                st.success("Brand kit saved!")
 
-        # HF token
         st.markdown("---")
-        hf_col1, hf_col2 = st.columns([3,1])
-        with hf_col1:
-            hf_tok = st.text_input(
-                "🤗 Hugging Face Token (for AI image generation)",
+        st.markdown("##### 🔑 API Keys (all free)")
+        a1, a2, a3 = st.columns(3)
+
+        with a1:
+            hf_v = st.text_input(
+                "🤗 Hugging Face Token",
                 type="password",
                 value=st.session_state.get("hf_token",""),
-                placeholder="hf_xxxxxxxxxxxxxxxxxxxxxxxxxx",
-                help="Free at huggingface.co → Settings → Access Tokens → New token (read)",
+                placeholder="hf_xxxxxxxxxx",
+                help="huggingface.co → Settings → Access Tokens → New (Read)",
             )
-            if hf_tok:
-                st.session_state["hf_token"] = hf_tok.strip()
-        with hf_col2:
-            st.markdown("<br>", unsafe_allow_html=True)
-            if not _hf_key():
-                st.warning("No HF token → gradient background used")
-            else:
-                st.success("HF token set ✓")
+            if hf_v: st.session_state["hf_token"] = hf_v.strip()
+            if _hf_key(): st.success("HF ✓ — AI images ON")
+            else:          st.warning("No HF key → gradient bg")
+
+        with a2:
+            groq_v = st.text_input(
+                "⚡ Groq API Key",
+                type="password",
+                value=st.session_state.get("groq_api_key",""),
+                placeholder="gsk_xxxxxxxxxx",
+                help="console.groq.com → API Keys → Create (free)",
+            )
+            if groq_v: st.session_state["groq_api_key"] = groq_v.strip()
+            if _groq_key(): st.success("Groq ✓ — fast LLM")
+            else:            st.info("Optional — Gemini used as fallback")
+
+        with a3:
+            gem_v = st.text_input(
+                "🔵 Gemini API Key (fallback LLM)",
+                type="password",
+                value=st.session_state.get("gemini_key",""),
+                placeholder="AIzaSy...",
+                help="aistudio.google.com/app/apikey — free, 250 req/day",
+            )
+            if gem_v: st.session_state["gemini_key"] = gem_v.strip()
+            if _gemini_key(): st.success("Gemini ✓ — LLM fallback ready")
+            else:              st.info("Get free key at aistudio.google.com")
+
+    # ── Brand kit values for use everywhere ───────────────────────────────────
+    logo_bytes = st.session_state.get("brand_logo")
+    cert_bytes = st.session_state.get("brand_cert")
+    bk_fb      = st.session_state.get("bk_fb","")
+    bk_insta   = st.session_state.get("bk_insta","")
+    bk_web     = st.session_state.get("bk_web","")
 
     st.markdown("---")
 
     # ── TABS ──────────────────────────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs([
+    tab_copy, tab_single, tab_video, tab_bulk = st.tabs([
+        "🤖 AI Copy Generator",
         "🖼️ Single Banner",
-        "🎬 Video Slideshow (20-30s)",
-        "📦 Bulk Export (all platforms)",
+        "🎬 Video Slideshow",
+        "📦 Bulk Export",
     ])
 
-    # Pull brand kit from session
-    logo_bytes = st.session_state.get("brand_logo")
-    cert_bytes = st.session_state.get("brand_cert")
-    fb         = st.session_state.get("bk_fb", "")
-    insta      = st.session_state.get("bk_insta", "")
-    web        = st.session_state.get("bk_web", "")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 1 — AI COPY GENERATOR
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_copy:
+        st.markdown("### 🤖 AI Travel Copy Generator")
+        st.caption("Groq (llama-3.3-70b) or Gemini 2.5 Flash — both free. Generates all "
+                   "marketing copy + AI image scene prompts for your package.")
 
-    # ════════════════════════════════════════════════════════════════════════
-    # TAB 1: SINGLE BANNER
-    # ════════════════════════════════════════════════════════════════════════
-    with tab1:
-        c_left, c_right = st.columns([1, 1], gap="large")
+        cl, cr = st.columns([1,1], gap="large")
 
-        with c_left:
-            st.markdown("### 🎨 AI Image Prompt")
-            destination = st.text_input("Destination / Location",
-                                        placeholder="Rajasthan, India · Bali, Indonesia")
-            prompt_desc = st.text_area(
-                "Describe the scene you want AI to generate",
-                height=90,
-                placeholder=(
-                    "Majestic Amber Fort at golden sunset, Rajasthan desert landscape, "
-                    "camel silhouettes, warm orange sky"
-                ),
-            )
-            img_style   = st.selectbox("Image style", list(IMG_STYLES.keys()))
-            enhance_btn = st.checkbox("✨ Auto-enhance prompt with AI (uses Groq)", value=True)
+        with cl:
+            cp_dest  = st.text_input("🗺️ Destination", placeholder="Rajasthan, India")
+            cp_type  = st.selectbox("🏷️ Package Type", [
+                "Cultural & Heritage Tour","Beach & Relaxation","Adventure & Trekking",
+                "Wildlife Safari","Honeymoon Package","Family Holiday",
+                "Pilgrimage / Religious Tour","Luxury Getaway","Budget Backpacker","Corporate / MICE",
+            ])
+            cp_dur   = st.text_input("📅 Duration", placeholder="7 Nights / 8 Days")
+            cp_extra = st.text_area("💬 Key highlights / extras",
+                                    placeholder="Desert safari, camel ride, folk dinner, "
+                                                "Jaipur city tour, Udaipur lake cruise…", height=100)
+            cp_gen   = st.button("✨ Generate All Copy + Scene Prompts",
+                                  type="primary", use_container_width=True,
+                                  disabled=not (_llm_available() and cp_dest.strip()))
+            if not _llm_available():
+                st.caption("⚠️ Add Groq or Gemini key in Brand Kit to enable AI copy.")
+
+        with cr:
+            if cp_gen:
+                with st.spinner("AI writing your travel copy…"):
+                    result = generate_all_copy(cp_dest, cp_type, cp_dur, cp_extra)
+                if result:
+                    st.session_state["ai_copy"] = result
+                    st.session_state["ai_dest"] = cp_dest
+                    st.success("✅ Done! Switch to Single Banner or Video Slideshow — all fields pre-filled.")
+                else:
+                    st.error("Empty response. Check your API key and try again.")
+
+            ai = st.session_state.get("ai_copy", {})
+            if ai:
+                def _box(label, val):
+                    if val:
+                        st.markdown(f'<div class="copy-lbl">{label}</div>', unsafe_allow_html=True)
+                        v = "\n".join(f"• {h}" for h in val) if isinstance(val, list) else str(val)
+                        st.markdown(f'<div class="copy-box">{v}</div>', unsafe_allow_html=True)
+
+                _box("HEADLINE", ai.get("title",""))
+                _box("SUBTITLE", ai.get("subtitle",""))
+                _box("PACKAGE NAME", ai.get("package_name",""))
+                _box("PRICE HINT", ai.get("price_hint",""))
+                _box("CALL TO ACTION", ai.get("cta",""))
+                _box("HIGHLIGHTS", ai.get("highlights",[]))
+                st.markdown("---")
+                _box("📺 YouTube Title", ai.get("youtube_title",""))
+                _box("📸 Instagram Caption", ai.get("instagram_caption",""))
+                _box("👥 Facebook Caption", ai.get("facebook_caption",""))
+                _box("📱 WhatsApp Status", ai.get("whatsapp_status",""))
+                _box("🎬 30-sec Reel Script", ai.get("short_video_script",""))
+                if ai.get("scene_prompts"):
+                    _box("🎨 AI Scene Prompts (for Video tab)", ai.get("scene_prompts",[]))
+                st.info("👉 Go to **Single Banner** or **Video Slideshow** — fields are pre-filled!")
+            else:
+                st.markdown("""<div class="empty"><div class="e-icon">🤖</div>
+                <div class="e-text">Enter destination → Generate All Copy</div></div>""",
+                unsafe_allow_html=True)
+
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 2 — SINGLE BANNER
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_single:
+        ai = st.session_state.get("ai_copy",{})
+        sl, sr = st.columns([1,1], gap="large")
+
+        with sl:
+            st.markdown("### 🎨 AI Scene")
+            s_dest  = st.text_input("Destination", value=st.session_state.get("ai_dest",""),
+                                     placeholder="Rajasthan, India", key="s_dest")
+            s_desc  = st.text_area("Describe the scene for AI to generate",
+                                    height=90, key="s_desc",
+                                    placeholder="Majestic Amber Fort at golden sunset, "
+                                                "Rajasthan desert, camel silhouettes, warm orange sky")
+            s_style = st.selectbox("Image style", list(IMG_STYLES.keys()), key="s_style")
+            s_enh   = st.checkbox("✨ Auto-enhance prompt with AI", value=True, key="s_enh",
+                                   disabled=not _llm_available())
 
             st.markdown("### 📐 Format")
-            platform  = st.selectbox("Platform", list(PLATFORMS.keys()))
-            w, h      = PLATFORMS[platform]
+            s_plat   = st.selectbox("Platform", list(PLATFORMS.keys()), key="s_plat")
+            sw, sh   = PLATFORMS[s_plat]
 
-            st.markdown("### ✍️ Package Content")
-            pkg_name   = st.text_input("Package name", placeholder="Royal Rajasthan — 7 Days")
-            headline   = st.text_input("Headline",     placeholder="Discover the Land of Maharajas")
-            subline    = st.text_input("Subheadline",  placeholder="Heritage · Desert · Culture")
-            price      = st.text_input("Price",        placeholder="₹29,999/person")
-            cta_text   = st.text_input("Call to action", value="Book Now →")
-            hl_raw     = st.text_area("Highlights (one per line)",
-                                      placeholder="Amber Fort Sunrise\nDesert Safari\nCamel Camp\nJaipur Markets",
-                                      height=100)
-            highlights = [l.strip() for l in hl_raw.splitlines() if l.strip()]
+            st.markdown("### ✍️ Content")
+            use_ai   = bool(ai) and st.checkbox("⚡ Auto-fill from AI Copy tab", value=bool(ai))
 
-            st.markdown("### 🎨 Style")
-            c1, c2 = st.columns(2)
-            with c1: logo_pos = st.selectbox("Logo position",
-                                             ["Top Right","Top Left","Bottom Right","Bottom Left"])
-            with c2: overlay_alpha = st.slider("Overlay darkness", 80, 220, 140)
+            s_pkg    = st.text_input("Package name",
+                                      value=ai.get("package_name","") if use_ai else "",
+                                      placeholder="Royal Rajasthan — 7 Days", key="s_pkg")
+            s_head   = st.text_input("Headline",
+                                      value=ai.get("title","") if use_ai else "",
+                                      placeholder="Discover the Land of Maharajas", key="s_head")
+            s_sub    = st.text_input("Subheadline",
+                                      value=ai.get("subtitle","") if use_ai else "",
+                                      placeholder="Heritage · Desert · Culture", key="s_sub")
+            s_price  = st.text_input("Price",
+                                      value=ai.get("price_hint","") if use_ai else "",
+                                      placeholder="₹29,999/person", key="s_price")
+            s_cta    = st.text_input("Call to action",
+                                      value=ai.get("cta","Book Now →") if use_ai else "Book Now →",
+                                      key="s_cta")
+            default_hl = "\n".join(ai.get("highlights",[])) if use_ai else ""
+            s_hl_raw = st.text_area("Highlights (one per line)", value=default_hl, height=100,
+                                     placeholder="Amber Fort Sunrise\nDesert Safari\nCamel Camp",
+                                     key="s_hl")
+            s_hl     = [l.strip() for l in s_hl_raw.splitlines() if l.strip()]
 
-            gen_single = st.button("🚀 Generate Banner", type="primary", use_container_width=True)
+            c1, c2   = st.columns(2)
+            with c1: s_lpos = st.selectbox("Logo position",
+                                            ["Top Right","Top Left","Bottom Right","Bottom Left"],
+                                            key="s_lpos")
+            with c2: s_ov   = st.slider("Overlay darkness", 80, 220, 140, key="s_ov")
 
-        with c_right:
+            s_gen    = st.button("🚀 Generate Banner", type="primary", use_container_width=True)
+
+        with sr:
             st.markdown("### 👁️ Preview")
 
-            if gen_single:
-                if not prompt_desc.strip():
-                    st.error("Please describe the scene first.")
+            if s_gen:
+                if not s_desc.strip():
+                    st.error("Please describe the scene you want AI to generate.")
                 else:
-                    with st.spinner("Step 1/3: Enhancing prompt with AI..."):
-                        style_sfx = IMG_STYLES[img_style]
-                        final_prompt = (
-                            enhance_prompt(prompt_desc, style_sfx, destination)
-                            if enhance_btn and _llm_key()
-                            else f"{prompt_desc}, {destination}, {style_sfx}, no text"
-                        )
+                    with st.spinner("1/3 Enhancing prompt…"):
+                        sfx = IMG_STYLES[s_style]
+                        final_p = (enhance_image_prompt(s_desc, sfx, s_dest)
+                                   if s_enh and _llm_available()
+                                   else f"{s_desc}, {s_dest}, {sfx}, no text, no watermark")
 
-                    st.caption(f"📝 Enhanced prompt: *{final_prompt[:120]}...*")
+                    st.caption(f"📝 *{final_p[:130]}…*")
 
-                    with st.spinner("Step 2/3: Generating AI image (15-30s)..."):
-                        bg = generate_ai_image(final_prompt, w, h)
+                    with st.spinner("2/3 Generating AI image (15-30s)…"):
+                        bg = generate_ai_image(final_p, sw, sh)
 
-                    with st.spinner("Step 3/3: Compositing branding..."):
+                    with st.spinner("3/3 Compositing branding…"):
                         banner = compose_banner(
-                            bg_img=bg, w=w, h=h,
-                            package_name=pkg_name, headline=headline,
-                            subheadline=subline, highlights=highlights,
-                            price=price, cta=cta_text,
-                            logo_bytes=logo_bytes, logo_pos=logo_pos,
+                            bg_img=bg, w=sw, h=sh,
+                            package_name=s_pkg, headline=s_head,
+                            subheadline=s_sub, highlights=s_hl,
+                            price=s_price, cta=s_cta,
+                            logo_bytes=logo_bytes, logo_pos=s_lpos,
                             cert_bytes=cert_bytes,
-                            fb=fb, insta=insta, web=web,
-                            overlay_alpha=overlay_alpha,
+                            fb=bk_fb, insta=bk_insta, web=bk_web,
+                            overlay_alpha=s_ov,
                         )
 
-                    b = img_bytes(banner)
-                    st.session_state["s_banner"] = b
-                    st.session_state["s_name"]   = f"{pkg_name or 'banner'}_{platform[:12]}.png"
+                    st.session_state["s_banner"] = img_bytes(banner)
+                    st.session_state["s_name"]   = f"{s_pkg or 'banner'}_{s_plat[:14]}.png"
 
             if st.session_state.get("s_banner"):
                 st.image(st.session_state["s_banner"], use_container_width=True)
-                st.download_button(
-                    "📥 Download PNG",
+                st.download_button("📥 Download PNG",
                     data=st.session_state["s_banner"],
                     file_name=st.session_state.get("s_name","banner.png"),
-                    mime="image/png",
-                    use_container_width=True,
-                )
+                    mime="image/png", use_container_width=True)
+                st.success("✅ Ready to post!")
             else:
-                st.markdown("""
-                <div style="border:0.5px solid var(--color-border-tertiary);border-radius:12px;
-                            padding:80px 20px;text-align:center">
-                    <div style="font-size:48px">🤖</div>
-                    <div style="color:var(--color-text-secondary);margin-top:12px;font-size:14px">
-                        Describe a scene → AI generates it → your brand overlaid
-                    </div>
+                st.markdown("""<div class="empty"><div class="e-icon">🤖</div>
+                <div class="e-text">Describe a scene → AI generates it → brand overlaid</div>
                 </div>""", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════════
-    # TAB 2: VIDEO SLIDESHOW
-    # ════════════════════════════════════════════════════════════════════════
-    with tab2:
-        st.markdown("### 🎬 Multi-Scene Video (20-30 seconds)")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 3 — VIDEO SLIDESHOW
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_video:
+        ai = st.session_state.get("ai_copy",{})
+        st.markdown("### 🎬 Multi-Scene Animated Slideshow (20-30s)")
         st.info(
-            "Each 'scene' = AI generates a different image + your caption overlaid. "
-            "Output is an animated GIF (20-30s). Import into CapCut to add music "
-            "and export as MP4 for YouTube Shorts / Reels."
+            "Each scene = AI generates a unique image + caption. "
+            "Output is an animated GIF. Import into **CapCut** → add music → export MP4 for Reels/Shorts."
         )
 
-        vc_l, vc_r = st.columns([1, 1], gap="large")
+        vl, vr = st.columns([1,1], gap="large")
 
-        with vc_l:
-            v_dest      = st.text_input("Destination", placeholder="Kerala, India", key="v_dest")
-            v_pkg       = st.text_input("Package name", placeholder="Backwaters Bliss — 5 Days", key="v_pkg")
-            v_platform  = st.selectbox("Format", [
-                "Instagram / Reels Story (9:16)",
-                "YouTube Shorts (9:16)",
-                "Instagram Post (1:1)",
+        with vl:
+            v_dest   = st.text_input("Destination", value=st.session_state.get("ai_dest",""),
+                                      placeholder="Kerala, India", key="v_dest")
+            v_pkg    = st.text_input("Package name",
+                                      value=ai.get("package_name","") if ai else "",
+                                      placeholder="Backwaters Bliss — 5 Days", key="v_pkg")
+            v_plat   = st.selectbox("Format", [
+                "Instagram / Reels Story (9:16)  1080×1920",
+                "YouTube Shorts (9:16)           1080×1920",
+                "Instagram Post (1:1)            1080×1080",
+                "YouTube Thumbnail (16:9)        1280×720",
             ], key="v_plat")
-            vw, vh      = PLATFORMS[v_platform]
-            v_style     = st.selectbox("Image style", list(IMG_STYLES.keys()), key="v_style")
-            v_logo_pos  = st.selectbox("Logo position", ["Top Right","Top Left"], key="v_lpos")
-            v_overlay   = st.slider("Overlay darkness", 80, 220, 150, key="v_ov")
-            v_duration  = st.slider("Seconds per scene", 2, 5, 3, key="v_dur")
+            vw, vh   = PLATFORMS[v_plat]
+            v_style  = st.selectbox("Image style", list(IMG_STYLES.keys()), key="v_style")
+            v_lpos   = st.selectbox("Logo position", ["Top Right","Top Left"], key="v_lpos")
+            v_ov     = st.slider("Overlay darkness", 80, 220, 150, key="v_ov")
+            v_dur    = st.slider("Seconds per scene", 2, 5, 3, key="v_dur")
+            v_price  = st.text_input("Price (shown on last slide)",
+                                      value=ai.get("price_hint","") if ai else "",
+                                      placeholder="₹22,999/person", key="v_price")
+            v_autocap = st.checkbox("✨ AI writes slide captions automatically",
+                                     value=_llm_available(), disabled=not _llm_available())
 
             st.markdown("### 🎞️ Scenes")
-            st.caption("Each scene = one AI-generated image. Describe 4-8 scenes.")
+            st.caption("Describe each scene image. Leave blank to skip.")
 
-            n_scenes = st.slider("Number of scenes", 3, 8, 5, key="v_nsc")
+            # Pre-fill from AI scene_prompts if available
+            ai_scenes = ai.get("scene_prompts",[]) if ai else []
+            ai_hls    = ai.get("highlights",[]) if ai else []
 
-            scenes = []
-            captions_input = []
+            n_scenes = st.slider("Number of scenes", 3, 8, min(5, max(3, len(ai_scenes))), key="v_nsc")
+
+            scene_descs = []; scene_caps_manual = []
             for i in range(n_scenes):
-                sc, cp = st.columns([2, 1])
+                sc, cp = st.columns([2,1])
+                default_scene = ai_scenes[i] if i < len(ai_scenes) else ""
+                default_cap   = ai_hls[i] if i < len(ai_hls) else ""
                 with sc:
-                    s = st.text_input(
-                        f"Scene {i+1} — describe the image",
-                        placeholder=["Houseboat at sunrise on backwaters",
-                                     "Elephant at Periyar wildlife sanctuary",
-                                     "Kathakali dance performance in temple",
-                                     "Tea plantation in Munnar hills",
-                                     "Beach at Varkala cliffs at golden hour"][i % 5],
-                        key=f"sc_{i}",
-                    )
-                    scenes.append(s)
+                    s = st.text_input(f"Scene {i+1} — image description",
+                                       value=default_scene, key=f"vs_{i}",
+                                       placeholder=f"Scene {i+1} description")
+                    scene_descs.append(s)
                 with cp:
-                    c = st.text_input(
-                        "Caption",
-                        placeholder=["Houseboat Sunrise","Wildlife Safari",
-                                     "Cultural Show","Tea Highlands","Clifftop Beach"][i % 5],
-                        key=f"cp_{i}",
-                    )
-                    captions_input.append(c)
+                    c = st.text_input("Caption", value=default_cap, key=f"vc_{i}",
+                                       placeholder=f"Caption {i+1}")
+                    scene_caps_manual.append(c)
 
-            v_price  = st.text_input("Price", placeholder="₹22,999/person", key="v_price")
-            v_gen_cp = st.checkbox("✨ AI auto-generates captions from scene descriptions", value=True)
+            v_gen = st.button("🎬 Generate Slideshow", type="primary",
+                               use_container_width=True,
+                               disabled=not any(s.strip() for s in scene_descs))
 
-            gen_video = st.button("🎬 Generate Video Slideshow", type="primary",
-                                  use_container_width=True,
-                                  disabled=not any(scenes))
+        with vr:
+            st.markdown("### 👁️ Preview")
 
-        with vc_r:
-            st.markdown("### 👁️ Slideshow Preview")
-
-            if gen_video:
-                valid_scenes = [(s.strip(), captions_input[i]) for i, s in enumerate(scenes) if s.strip()]
-                if not valid_scenes:
+            if v_gen:
+                valid = [(s.strip(), scene_caps_manual[i])
+                         for i, s in enumerate(scene_descs) if s.strip()]
+                if not valid:
                     st.error("Fill in at least one scene description.")
                 else:
-                    # Generate AI captions if requested
-                    if v_gen_cp and _llm_key():
-                        with st.spinner("Generating scene captions with AI..."):
-                            scene_descs = [s for s, _ in valid_scenes]
-                            ai_caps = generate_scene_captions(v_pkg, scene_descs, len(valid_scenes))
+                    # AI captions
+                    if v_autocap and _llm_available():
+                        with st.spinner("AI writing captions…"):
+                            captions = generate_scene_captions(
+                                v_pkg, [s for s,_ in valid], len(valid))
                     else:
-                        ai_caps = [c for _, c in valid_scenes]
+                        captions = [c or s[:30] for s,c in valid]
 
-                    style_sfx = IMG_STYLES[v_style]
-                    frames    = []
-                    prog      = st.progress(0, text="Generating scenes...")
+                    sfx    = IMG_STYLES[v_style]
+                    frames = []
+                    prog   = st.progress(0, text="Generating scenes…")
+                    total  = len(valid)
 
-                    for idx, (scene_desc, _) in enumerate(valid_scenes):
-                        prog.progress((idx) / len(valid_scenes),
-                                      text=f"Scene {idx+1}/{len(valid_scenes)}: generating image...")
+                    for idx, (scene_desc, _) in enumerate(valid):
+                        prog.progress(idx/total, text=f"Scene {idx+1}/{total}: generating…")
 
-                        # Enhance prompt
-                        full_prompt = (
-                            enhance_prompt(scene_desc, style_sfx, v_dest)
-                            if _llm_key()
-                            else f"{scene_desc}, {v_dest}, {style_sfx}, no text"
-                        )
+                        full_p = (enhance_image_prompt(scene_desc, sfx, v_dest)
+                                  if _llm_available()
+                                  else f"{scene_desc}, {v_dest}, {sfx}, no text")
 
-                        # Generate image
-                        bg = generate_ai_image(full_prompt, vw, vh)
+                        bg = generate_ai_image(full_p, vw, vh)
+                        cap = captions[idx] if idx < len(captions) else f"Scene {idx+1}"
 
-                        # Caption for this frame
-                        cap = ai_caps[idx] if idx < len(ai_caps) else scene_desc[:30]
-
-                        # Compose frame — only show caption + logo + social on video frames
                         frame = compose_banner(
                             bg_img=bg, w=vw, h=vh,
                             package_name=v_pkg if idx == 0 else "",
-                            headline="" if idx > 0 else v_pkg,
-                            subheadline="",
-                            highlights=[],
-                            price=v_price if idx == len(valid_scenes)-1 else "",
-                            cta="Book Now →" if idx == len(valid_scenes)-1 else "",
-                            caption=cap,
-                            logo_bytes=logo_bytes,
-                            logo_pos=v_logo_pos,
+                            price=v_price if idx == total-1 else "",
+                            cta="Book Now →" if idx == total-1 else "",
+                            slide_caption=cap,
+                            slide_num=f"{idx+1:02d} / {total:02d}",
+                            logo_bytes=logo_bytes, logo_pos=v_lpos,
                             cert_bytes=cert_bytes,
-                            fb=fb, insta=insta, web=web,
-                            overlay_alpha=v_overlay,
+                            fb=bk_fb, insta=bk_insta, web=bk_web,
+                            overlay_alpha=v_ov,
                         )
                         frames.append(frame)
 
-                    prog.progress(1.0, text="Building animated GIF...")
-                    gif = make_gif(frames, fps_duration_ms=v_duration * 1000)
+                    prog.progress(1.0, text="Building GIF…")
+                    gif = make_gif(frames, ms=v_dur*1000)
                     st.session_state["v_gif"]    = gif
                     st.session_state["v_frames"] = [img_bytes(f) for f in frames]
                     st.session_state["v_pkg"]    = v_pkg
+                    st.session_state["v_caps"]   = captions
                     prog.empty()
-                    st.success(f"✅ {len(frames)}-scene slideshow · {len(gif)//1024} KB")
+                    st.success(f"✅ {len(frames)}-scene GIF · {len(gif)//1024} KB")
 
             gif = st.session_state.get("v_gif")
             if gif:
                 b64 = base64.b64encode(gif).decode()
-                st.markdown(
-                    f'<img src="data:image/gif;base64,{b64}" style="width:100%;border-radius:8px">',
-                    unsafe_allow_html=True,
-                )
-                st.download_button(
-                    "📥 Download GIF",
-                    data=gif,
+                st.markdown(f'<img src="data:image/gif;base64,{b64}" '
+                            f'style="width:100%;border-radius:10px">', unsafe_allow_html=True)
+                st.download_button("📥 Download GIF", data=gif,
                     file_name=f"{st.session_state.get('v_pkg','video')}_slideshow.gif",
-                    mime="image/gif",
-                    use_container_width=True,
-                )
+                    mime="image/gif", use_container_width=True)
 
-                # Download individual frames as ZIP
                 if st.session_state.get("v_frames"):
                     zbuf = io.BytesIO()
-                    with zipfile.ZipFile(zbuf, "w") as zf:
-                        for i, fb_bytes in enumerate(st.session_state["v_frames"]):
-                            zf.writestr(f"scene_{i+1:02d}.png", fb_bytes)
+                    with zipfile.ZipFile(zbuf,"w") as zf:
+                        for i, fb2 in enumerate(st.session_state["v_frames"]):
+                            zf.writestr(f"scene_{i+1:02d}.png", fb2)
                     zbuf.seek(0)
-                    st.download_button(
-                        "📥 Download Individual Frames (ZIP)",
-                        data=zbuf.getvalue(),
-                        file_name="frames.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                    )
+                    st.download_button("📥 Download Frames ZIP", data=zbuf.getvalue(),
+                        file_name="frames.zip", mime="application/zip", use_container_width=True)
+
+                caps = st.session_state.get("v_caps",[])
+                if caps:
+                    with st.expander("📝 AI slide captions"):
+                        for i,c in enumerate(caps):
+                            st.markdown(f"**{i+1}.** {c}")
 
                 st.markdown("---")
-                st.markdown("### 🎵 Add Music & Export as MP4")
-                st.markdown("""
-**Free music + MP4 workflow:**
-1. Import your GIF into **[CapCut](https://capcut.com)** (free)
-2. Add free music from CapCut's library or upload your own
-3. Adjust timing (target 20-30 seconds total)
-4. Export as **1080×1920 MP4** → upload to Shorts/Reels
-
-**Free royalty-free music sources:**
-- [YouTube Audio Library](https://studio.youtube.com/channel/music) — 100% free
-- [Pixabay Music](https://pixabay.com/music/) — free, no attribution
-- [Mixkit](https://mixkit.co/free-stock-music/) — free for social media
-                """)
+                st.markdown("**🎵 Add music & export as MP4 (free):**")
+                st.markdown(
+                    "1. Import GIF into **[CapCut](https://capcut.com)** (free)\n"
+                    "2. Add music from CapCut's library or [Pixabay Music](https://pixabay.com/music/)\n"
+                    "3. Export as 1080×1920 MP4 → upload to Reels / Shorts"
+                )
             else:
-                st.markdown("""
-                <div style="border:0.5px solid var(--color-border-tertiary);border-radius:12px;
-                            padding:80px 20px;text-align:center">
-                    <div style="font-size:48px">🎬</div>
-                    <div style="color:var(--color-text-secondary);margin-top:12px;font-size:14px">
-                        Add scenes → Generate → Download GIF → Add music in CapCut
-                    </div>
+                st.markdown("""<div class="empty"><div class="e-icon">🎬</div>
+                <div class="e-text">Add scenes → Generate → Download GIF → Add music in CapCut</div>
                 </div>""", unsafe_allow_html=True)
 
-    # ════════════════════════════════════════════════════════════════════════
-    # TAB 3: BULK EXPORT
-    # ════════════════════════════════════════════════════════════════════════
-    with tab3:
-        st.markdown("### 📦 One prompt → All platform sizes")
-        st.info("Generate once, download a ZIP with your banner in every platform format.")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 4 — BULK EXPORT
+    # ═══════════════════════════════════════════════════════════════════════════
+    with tab_bulk:
+        ai = st.session_state.get("ai_copy",{})
+        st.markdown("### 📦 One AI Image → All Platform Sizes")
+        st.info("Generates the AI image once at full quality, then crops & composites for every platform.")
 
-        b_l, b_r = st.columns([1, 1], gap="large")
+        bl, br = st.columns([1,1], gap="large")
 
-        with b_l:
-            b_dest   = st.text_input("Destination",   placeholder="Goa, India", key="b_dest")
-            b_prompt = st.text_area("Scene description", height=80,
-                                    placeholder="Pristine white sand beach, turquoise sea, palm trees, golden sunset",
-                                    key="b_prompt")
+        with bl:
+            b_dest   = st.text_input("Destination", placeholder="Goa, India", key="b_dest")
+            b_desc   = st.text_area("Scene description (AI generates this image)",
+                                     height=80, key="b_desc",
+                                     placeholder="Pristine beach, turquoise sea, palm trees, golden sunset")
             b_style  = st.selectbox("Style", list(IMG_STYLES.keys()), key="b_style")
-            b_pkg    = st.text_input("Package name",  placeholder="Goa Beach Holiday — 5N/6D", key="b_pkg")
-            b_head   = st.text_input("Headline",      placeholder="Sun, Sand & Sea", key="b_head")
-            b_sub    = st.text_input("Subheadline",   placeholder="All-inclusive from Mumbai", key="b_sub")
-            b_price  = st.text_input("Price",         placeholder="₹18,999/person", key="b_price")
-            b_cta    = st.text_input("CTA",           value="Book Now →", key="b_cta")
-            b_hl     = st.text_area("Highlights",     height=80, key="b_hl",
-                                    placeholder="Baga Beach\nWater Sports\nSunset Cruise")
-            b_lpos   = st.radio("Logo position",
-                                ["Top Right","Top Left","Bottom Right","Bottom Left"],
-                                horizontal=True, key="b_lpos")
-            b_plats  = st.multiselect("Export for", list(PLATFORMS.keys()),
-                                      default=list(PLATFORMS.keys())[:4])
-            b_gen    = st.button("📦 Generate All Sizes", type="primary",
-                                 use_container_width=True, disabled=not b_plats)
+            b_use_ai = bool(ai) and st.checkbox("⚡ Fill content from AI Copy tab", value=bool(ai), key="b_useai")
 
-        with b_r:
+            b_pkg    = st.text_input("Package Name", key="b_pkg",
+                                      value=ai.get("package_name","") if b_use_ai else "",
+                                      placeholder="Goa Beach Holiday — 5N/6D")
+            b_head   = st.text_input("Headline", key="b_head",
+                                      value=ai.get("title","") if b_use_ai else "")
+            b_sub    = st.text_input("Subheadline", key="b_sub",
+                                      value=ai.get("subtitle","") if b_use_ai else "")
+            b_price  = st.text_input("Price", key="b_price",
+                                      value=ai.get("price_hint","") if b_use_ai else "")
+            b_cta    = st.text_input("CTA", key="b_cta",
+                                      value=ai.get("cta","Book Now →") if b_use_ai else "Book Now →")
+            def_hl   = "\n".join(ai.get("highlights",[])) if b_use_ai else ""
+            b_hl_raw = st.text_area("Highlights (one per line)", key="b_hl", value=def_hl, height=90)
+            b_hl     = [l.strip() for l in b_hl_raw.splitlines() if l.strip()]
+            b_lpos   = st.radio("Logo position",
+                                 ["Top Right","Top Left","Bottom Right","Bottom Left"],
+                                 horizontal=True, key="b_lpos")
+            b_plats  = st.multiselect("Export for", list(PLATFORMS.keys()),
+                                       default=list(PLATFORMS.keys())[:4])
+            b_gen    = st.button("📦 Generate All Sizes", type="primary",
+                                  use_container_width=True, disabled=not (b_desc.strip() and b_plats))
+
+        with br:
             st.markdown("### 📋 Results")
 
-            if b_gen and b_plats:
-                b_highlights = [l.strip() for l in b_hl.splitlines() if l.strip()]
+            if b_gen and b_plats and b_desc.strip():
+                sfx = IMG_STYLES[b_style]
 
-                # Generate the AI image ONCE at highest resolution, then resize per platform
-                with st.spinner("Step 1/2: Generating AI image..."):
-                    style_sfx    = IMG_STYLES[b_style]
-                    final_prompt = (
-                        enhance_prompt(b_prompt, style_sfx, b_dest)
-                        if _llm_key()
-                        else f"{b_prompt}, {b_dest}, {style_sfx}, no text"
-                    )
-                    # Generate at 1024×1024 (max HF free), crop per platform later
-                    master_bg = generate_ai_image(final_prompt, 1024, 1024)
+                with st.spinner("1/2 Generating AI image…"):
+                    final_p = (enhance_image_prompt(b_desc, sfx, b_dest)
+                               if _llm_available()
+                               else f"{b_desc}, {b_dest}, {sfx}, no text")
+                    master = generate_ai_image(final_p, 1024, 1024)
 
-                with st.spinner(f"Step 2/2: Compositing {len(b_plats)} banners..."):
+                with st.spinner(f"2/2 Compositing {len(b_plats)} banners…"):
                     zbuf = io.BytesIO()
-                    with zipfile.ZipFile(zbuf, "w") as zf:
+                    with zipfile.ZipFile(zbuf,"w") as zf:
+                        preview_done = False
                         for p_name in b_plats:
                             pw, ph = PLATFORMS[p_name]
-                            # Resize master for this platform
-                            if master_bg:
-                                ratio = max(pw/master_bg.width, ph/master_bg.height)
-                                nw, nh = int(master_bg.width*ratio), int(master_bg.height*ratio)
-                                bg_r   = master_bg.resize((nw, nh), Image.LANCZOS)
-                                left   = (nw-pw)//2; top = (nh-ph)//2
-                                bg_crop = bg_r.crop((left, top, left+pw, top+ph))
+                            if master:
+                                ratio = max(pw/master.width, ph/master.height)
+                                nw, nh = int(master.width*ratio), int(master.height*ratio)
+                                bg_r = master.resize((nw,nh), Image.LANCZOS)
+                                l = (nw-pw)//2; t = (nh-ph)//2
+                                bg_crop = bg_r.crop((l,t,l+pw,t+ph))
                             else:
                                 bg_crop = None
 
                             banner = compose_banner(
                                 bg_img=bg_crop, w=pw, h=ph,
                                 package_name=b_pkg, headline=b_head,
-                                subheadline=b_sub, highlights=b_highlights,
+                                subheadline=b_sub, highlights=b_hl,
                                 price=b_price, cta=b_cta,
                                 logo_bytes=logo_bytes, logo_pos=b_lpos,
                                 cert_bytes=cert_bytes,
-                                fb=fb, insta=insta, web=web,
+                                fb=bk_fb, insta=bk_insta, web=bk_web,
                             )
-                            safe = p_name.split("(")[0].strip().replace(" ","_")
-                            zf.writestr(f"{b_pkg or 'banner'}_{safe}_{pw}x{ph}.png",
-                                        img_bytes(banner))
+                            safe = p_name.split("(")[0].strip().replace(" ","_").replace("/","-")
+                            zf.writestr(f"{b_pkg or 'banner'}_{safe}_{pw}x{ph}.png", img_bytes(banner))
 
-                    zbuf.seek(0)
+                            if not preview_done:
+                                st.image(img_bytes(banner), caption=p_name, use_container_width=True)
+                                preview_done = True
 
-                # Preview first one
-                first_w, first_h = PLATFORMS[b_plats[0]]
-                if master_bg:
-                    ratio = max(first_w/master_bg.width, first_h/master_bg.height)
-                    nw, nh = int(master_bg.width*ratio), int(master_bg.height*ratio)
-                    bg_r   = master_bg.resize((nw, nh), Image.LANCZOS)
-                    left   = (nw-first_w)//2; top = (nh-first_h)//2
-                    bg_p   = bg_r.crop((left, top, left+first_w, top+first_h))
-                else:
-                    bg_p = None
-
-                preview = compose_banner(
-                    bg_img=bg_p, w=first_w, h=first_h,
-                    package_name=b_pkg, headline=b_head, subheadline=b_sub,
-                    highlights=b_highlights, price=b_price, cta=b_cta,
-                    logo_bytes=logo_bytes, logo_pos=b_lpos,
-                    cert_bytes=cert_bytes, fb=fb, insta=insta, web=web,
-                )
-                st.image(img_bytes(preview), caption=b_plats[0], use_container_width=True)
+                zbuf.seek(0)
                 st.success(f"✅ {len(b_plats)} banners ready!")
-                st.download_button(
-                    "📥 Download ZIP (all sizes)",
-                    data=zbuf.getvalue(),
+                st.download_button("📥 Download ZIP", data=zbuf.getvalue(),
                     file_name=f"{b_pkg or 'banners'}_all_platforms.zip",
-                    mime="application/zip",
-                    use_container_width=True,
-                )
+                    mime="application/zip", use_container_width=True)
             else:
-                st.markdown("""
-                <div style="border:0.5px solid var(--color-border-tertiary);border-radius:12px;
-                            padding:80px 20px;text-align:center">
-                    <div style="font-size:48px">📦</div>
-                    <div style="color:var(--color-text-secondary);margin-top:12px;font-size:14px">
-                        One AI image → resized for every platform → ZIP download
-                    </div>
+                st.markdown("""<div class="empty"><div class="e-icon">📦</div>
+                <div class="e-text">One AI image → resized for every platform → ZIP</div>
                 </div>""", unsafe_allow_html=True)
 
-    # ── Tips ──────────────────────────────────────────────────────────────────
+    # ── TIPS ──────────────────────────────────────────────────────────────────
     st.markdown("---")
-    with st.expander("🤗 How to get your free Hugging Face token"):
+    with st.expander("🤗 How to get your free API keys"):
         st.markdown("""
-1. Go to **[huggingface.co](https://huggingface.co)** → Sign up free (no credit card)
-2. Click your profile → **Settings** → **Access Tokens**
-3. Click **New token** → Type: **Read** → Name it anything → **Generate**
-4. Copy the token (starts with `hf_`) → paste it in the Brand Kit section above
+**Hugging Face (AI image generation):**
+1. [huggingface.co](https://huggingface.co) → Sign up free
+2. Profile → Settings → Access Tokens → **New token (Read)**
+3. Paste in Brand Kit above
+- Free tier: ~50-100 images/month · Model: FLUX.1-schnell (4-step, ~20s)
 
-**Free tier:** HF gives you a small monthly credit (enough for ~50-100 images/month).
-For more images, the cheapest paid option is ~$9/month.
+**Groq (fast LLM — copy generation + prompt enhancement):**
+1. [console.groq.com](https://console.groq.com) → Sign up free
+2. API Keys → Create key
+- Free: generous daily limits · Model: llama-3.3-70b
 
-**Model used:** `FLUX.1-schnell` — fastest high-quality free model (4 inference steps, ~20s/image)
+**Gemini (LLM fallback — if no Groq key):**
+1. [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → Sign in with Google
+2. Create API key (starts with `AIza`)
+- Free: 250 requests/day, no credit card
         """)
 
-    with st.expander("💡 Prompt writing tips for travel images"):
+    with st.expander("💡 Image prompt tips for stunning travel banners"):
         st.markdown("""
-**Good prompts include:**
-- Time of day: *golden hour, blue hour, midday sun, starry night*
-- Atmosphere: *misty, dramatic clouds, crystal clear, hazy sunrise*
-- Composition: *wide angle, aerial view, close-up texture, panoramic*
-- Quality tags: *ultra-realistic, 8k, sharp details, professional photography*
+**Include in every scene description:**
+- Time of day: *golden hour, sunrise, blue hour, starry night, midday*
+- Atmosphere: *dramatic clouds, misty, crystal clear, hazy, magical*
+- Composition: *wide angle, aerial view, close-up, panoramic, bird's eye*
+- Add always: **no text, no watermark, no people**
 
-**Always add:** `no text, no watermark, no people` to keep images clean for overlay
+**Great example prompts:**
+> *Taj Mahal at golden sunrise, reflection in fountain pool, dramatic orange sky, wide angle, 8k, no text, no people*
 
-**Example for Taj Mahal:**
-> *Taj Mahal at golden sunrise, reflection in fountain pool, dramatic orange sky, ultra-realistic photography, wide angle, 8k, no text, no people*
+> *Traditional Kerala houseboat on tranquil backwaters, lush coconut palms, golden sunset reflection, cinematic, no text*
 
-**Example for Kerala backwaters:**
-> *Traditional Kerala houseboat on tranquil backwaters, lush green coconut palms, golden sunset reflection, cinematic wide shot, ultra-realistic, 8k, no text*
+> *Baga Beach Goa, turquoise waves, palm trees swaying, tropical paradise, aerial drone shot, no people*
         """)
