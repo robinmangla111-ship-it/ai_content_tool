@@ -1330,28 +1330,45 @@ def render():
 
             with sr:
                 st.markdown("### 👁️ Preview")
-
                 if gen_banner and raw_photos:
-                    photos_pil = [_cover(Image.open(io.BytesIO(b)), 1920, 1080)
-                                  for b in raw_photos[:8]]
-                    sw, sh = PLATFORMS[sel_plat]
-                    content = dict(
-                        package_name=pkg_name, headline=headline,
-                        subheadline=subline, price=price_val,
-                        cta=cta_val, highlights=hl_list,
-                    )
-                    with st.spinner("Compositing…"):
-                        banner = compose(
-                            photos_pil, sw, sh,
-                            sel_theme, sel_layout, content,
-                            logo_bytes, sel_lpos, cert_bytes,
-                            bk_fb, bk_ig, bk_wb,
-                            show_price=show_price, show_cta=show_cta,
-                            enhance_photos=enhance_p,
+                    photos_pil = []
+                    for f in raw_photos[:8]:
+                        try:
+                            # Streamlit UploadedFile -> bytes
+                            if hasattr(f, "getvalue"):
+                                b = f.getvalue()
+                            else:
+                                b = f  # already bytes
+
+                            if not b or len(b) < 50:
+                                continue
+
+                            img = Image.open(io.BytesIO(b)).convert("RGB")
+                            photos_pil.append(_cover(img, 1920, 1080))
+
+                        except Exception as e:
+                            st.warning(f"⚠️ Skipping invalid image: {e}")
+                    if len(photos_pil) == 0:
+                        st.error("❌ No valid photos found. Please upload JPG/PNG images.")
+                    else:
+                        sw, sh = PLATFORMS[sel_plat]
+                        content = dict(
+                            package_name=pkg_name, headline=headline,
+                            subheadline=subline, price=price_val,
+                            cta=cta_val, highlights=hl_list,
                         )
-                    st.session_state["s_png"] = to_bytes(banner,"PNG")
-                    st.session_state["s_jpg"] = to_bytes(banner,"JPEG",90)
-                    st.session_state["s_name"]= f"{pkg_name or 'banner'}_{sel_plat[:14]}"
+                        with st.spinner("Compositing…"):
+                            banner = compose(
+                                 photos_pil, sw, sh,
+                                sel_theme, sel_layout, content,
+                                logo_bytes, sel_lpos, cert_bytes,
+                                bk_fb, bk_ig, bk_wb,
+                                show_price=show_price, show_cta=show_cta,
+                                enhance_photos=enhance_p,
+                            )
+                        st.session_state["s_png"] = to_bytes(banner,"PNG")
+                        st.session_state["s_jpg"] = to_bytes(banner,"JPEG",90)
+                        st.session_state["s_name"]= f"{pkg_name or 'banner'}_{sel_plat[:14]}"
 
                 if st.session_state.get("s_png"):
                     st.image(st.session_state["s_png"], use_container_width=True)
