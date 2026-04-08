@@ -1209,13 +1209,33 @@ def render():
     )
 
     # Show photo thumbnails
+    # ── Read ALL photo bytes ONCE immediately after upload ────────────────────
+    # Streamlit UploadedFile buffers drain on first read — must read bytes
+    # immediately and cache in session_state before any Image.open() calls.
     if photos_input:
-        thumb_cols = st.columns(min(len(photos_input), 8))
-        for i, pf in enumerate(photos_input[:8]):
-            img_prev = Image.open(pf)
-            scale = 120 / img_prev.width
-            thumb = img_prev.resize((120, int(img_prev.height*scale)), Image.LANCZOS)
-            thumb_cols[i].image(to_bytes(thumb), use_container_width=True)
+        # Only re-read if the set of filenames has changed (avoids re-read on reruns)
+        uploaded_names = [pf.name for pf in photos_input]
+        if st.session_state.get("_uploaded_names") != uploaded_names:
+            fresh_bytes = []
+            for pf in photos_input[:8]:
+                pf.seek(0)                  # rewind just in case
+                fresh_bytes.append(pf.read())
+            st.session_state["_uploaded_photo_bytes"] = fresh_bytes
+            st.session_state["_uploaded_names"]       = uploaded_names
+
+    cached_photo_bytes: list = st.session_state.get("_uploaded_photo_bytes", [])
+
+    # Thumbnail strip (uses cached bytes, never touches UploadedFile again)
+    if cached_photo_bytes:
+        thumb_cols = st.columns(min(len(cached_photo_bytes), 8))
+        for i, raw_b in enumerate(cached_photo_bytes):
+            try:
+                img_prev = Image.open(io.BytesIO(raw_b))
+                scale = 120 / img_prev.width
+                thumb = img_prev.resize((120, int(img_prev.height * scale)), Image.LANCZOS)
+                thumb_cols[i].image(to_bytes(thumb), use_container_width=True)
+            except Exception:
+                thumb_cols[i].warning(f"⚠ Photo {i+1}")
 
     # ── QUICK GENERATE ────────────────────────────────────────────────────────
     col_gen1, col_gen2 = st.columns([3,1])
@@ -1223,21 +1243,21 @@ def render():
         big_gen = st.button(
             "🚀 Generate All Content (AI)",
             type="primary", use_container_width=True,
-            disabled=not (free_text.strip() and photos_input),
+            disabled=not (free_text.strip() and cached_photo_bytes),
         )
     with col_gen2:
         if not _llm_ok():
             st.warning("Add API key ↑")
         elif not free_text.strip():
             st.info("Type your package ↑")
-        elif not photos_input:
+        elif not cached_photo_bytes:
             st.info("Upload photos ↑")
 
-    if big_gen and free_text.strip() and photos_input:
+    if big_gen and free_text.strip() and cached_photo_bytes:
         with st.spinner("🤖 AI generating complete package content…"):
-            ai_data = ai_generate_all(free_text, len(photos_input))
+            ai_data = ai_generate_all(free_text, len(cached_photo_bytes))
         st.session_state["ai_data"]   = ai_data
-        st.session_state["ai_photos"] = [pf.read() for pf in photos_input]
+        st.session_state["ai_photos"] = cached_photo_bytes   # already bytes, no .read()
         st.success(
             f"✅ Generated: **{ai_data.get('headline','')}**  ·  "
             f"Theme: {ai_data.get('theme','')}  ·  "
@@ -1249,11 +1269,10 @@ def render():
 
     if not ai and big_gen and not _llm_ok():
         st.warning("⚠️ No LLM key — using smart defaults. Add Groq/Gemini key for AI-generated copy.")
-        ai = ai_generate_all(free_text, len(photos_input) if photos_input else 1)
-        st.session_state["ai_data"] = ai
-        if photos_input:
-            st.session_state["ai_photos"] = [pf.read() for pf in photos_input]
-            raw_photos = st.session_state["ai_photos"]
+        ai = ai_generate_all(free_text, len(cached_photo_bytes))
+        st.session_state["ai_data"]   = ai
+        st.session_state["ai_photos"] = cached_photo_bytes
+        raw_photos = cached_photo_bytes
 
     st.markdown("---")
 
@@ -1332,8 +1351,15 @@ def render():
                 st.markdown("### 👁️ Preview")
 
                 if gen_banner and raw_photos:
-                    photos_pil = [_cover(Image.open(io.BytesIO(b)), 1920, 1080)
-                                  for b in raw_photos[:8]]
+                    photos_pil = []
+                    for b in raw_photos[:8]:
+                        try:
+                            photos_pil.append(Image.open(io.BytesIO(bytes(b))).convert("RGBA"))
+                        except Exception as _e:
+                            st.warning(f"Skipping unreadable photo: {_e}")
+                    if not photos_pil:
+                        st.error("No valid photos — please re-upload.")
+                        st.stop()
                     sw, sh = PLATFORMS[sel_plat]
                     content = dict(
                         package_name=pkg_name, headline=headline,
@@ -1461,7 +1487,12 @@ def render():
                 st.markdown("### 👁️ Preview")
 
                 if v_gen:
-                    photos_pil = [Image.open(io.BytesIO(b)) for b in raw_photos[:8]]
+                    photos_pil = []
+                    for b in raw_photos[:8]:
+                        try:
+                            photos_pil.append(Image.open(io.BytesIO(bytes(b))).convert("RGBA"))
+                        except Exception as _e:
+                            st.warning(f"Skipping unreadable photo: {_e}")
                     frames = []
                     prog = st.progress(0, text="Compositing frames…")
                     live_cols = st.columns(min(len(photos_pil),4))
@@ -1566,7 +1597,12 @@ def render():
             with br:
                 st.markdown("### 📋 Results")
                 if b_gen and b_plats:
-                    photos_pil = [Image.open(io.BytesIO(b)) for b in raw_photos[:8]]
+                    photos_pil = []
+                    for b in raw_photos[:8]:
+                        try:
+                            photos_pil.append(Image.open(io.BytesIO(bytes(b))).convert("RGBA"))
+                        except Exception as _e:
+                            st.warning(f"Skipping unreadable photo: {_e}")
                     content = dict(
                         package_name=ai.get("package_name",""),
                         headline=ai.get("headline",""),
