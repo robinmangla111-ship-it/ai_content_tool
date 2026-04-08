@@ -3,29 +3,29 @@
 =======================================================
 OUTPUT: .pptx file → import directly into Canva → every element is editable
 
-PREMIUM FEATURES ADDED:
-  ✅ 2-slide PPTX output (A4 Flyer + Story/Reel)
+PREMIUM FEATURES:
+  ✅ Slide 1: A4 Flyer (Luxury Poster)
+  ✅ Slide 2: Instagram Story (9:16)
+  ✅ Slide 3: Day-wise itinerary + inclusions + services
   ✅ Auto photo brightness detection → text placed left/right automatically
   ✅ Auto dominant color palette extraction from hero photo → dynamic theme
-  ✅ Hotel cards + highlights grid + collage layout
+  ✅ Auto collage layout selection (2–6 photos)
+  ✅ Hotel cards + highlights grid + premium deal card
   ✅ Dynamic font scaling (headline/subheadline/price)
-  ✅ Premium glass cards + shadow styling
+  ✅ Glass cards + shadows
   ✅ QR code + CTA buttons
+  ✅ Destination watermark typography (luxury style)
 
-Add to requirements.txt:
+REQUIREMENTS:
   python-pptx>=0.6.21
   pillow>=10.0.0
+  requests
 """
 
 import streamlit as st
-import sys, os, io, json, re, zipfile, base64, requests, math
+import sys, os, io, json, re, requests
 from urllib.parse import quote as url_quote
 
-_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _ROOT not in sys.path:
-    sys.path.insert(0, _ROOT)
-
-# ── python-pptx imports ───────────────────────────────────────────────────────
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
@@ -34,13 +34,16 @@ from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
 from pptx.oxml.xmlchemy import OxmlElement
 from pptx.oxml.ns import qn
 
-# ── PIL ───────────────────────────────────────────────────────────────────────
 from PIL import Image, ImageOps, ImageEnhance
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
+# BASIC UTILS
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _rgb(hex_str: str) -> RGBColor:
+    h = hex_str.lstrip("#")
+    return RGBColor(int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
 
 def _get(sk, sec, ev=""):
     v = st.session_state.get(sk, "").strip()
@@ -58,13 +61,9 @@ def _groq_key():   return _get("groq_key",   "GROQ_API_KEY",   "GROQ_API_KEY")
 def _gemini_key(): return _get("gemini_key", "GEMINI_API_KEY", "GEMINI_API_KEY")
 def _llm_ok():     return bool(_groq_key() or _gemini_key())
 
-def _rgb(hex_str: str) -> RGBColor:
-    h = hex_str.lstrip("#")
-    return RGBColor(int(h[0:2],16), int(h[2:4],16), int(h[4:6],16))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DESIGN THEMES
+# THEMES
 # ─────────────────────────────────────────────────────────────────────────────
 
 THEMES = {
@@ -140,8 +139,6 @@ THEMES = {
     },
 }
 
-CERT_NAMES = ["IATA", "OTAI", "ADTOI", "NIMA", "ETAA", "Aussie Specialist", "Mauritius", "Türkiye"]
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM
@@ -211,6 +208,7 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
   highlights (array of 6, max 4 words each),
   inclusions (array of 6 key inclusions),
   itinerary (array of {city, nights, hotel} for 2-4 stops),
+  day_plan (array of {day, title, details}),
   services (array of 5 services offered by agency),
   hashtags, instagram_caption, facebook_caption, whatsapp_status,
   youtube_title, youtube_desc, reel_script,
@@ -218,7 +216,7 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
   theme (one of: Classic Navy Gold/Emerald Luxury/Ocean Blue/Midnight Premium/Coral Vibrant)
 """
     usr_p = f"Package: \"{free_text}\"\nPhotos: {n_photos}\nGenerate:"
-    raw = _llm(sys_p, usr_p, 1200)
+    raw = _llm(sys_p, usr_p, 1400)
     data = _parse_json(raw) if raw else {}
 
     dest = free_text.split()[0].title() if free_text else "India"
@@ -239,6 +237,12 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
         "inclusions":["Airport Transfers","Hotel Accommodation","Daily Breakfast",
                       "All Sightseeing","Expert Tour Guide","24/7 Support"],
         "itinerary":[{"city":dest,"nights":3,"hotel":"Premium Hotel / Similar"}],
+        "day_plan":[
+            {"day":"Day 1","title":"Arrival & Check-in","details":"Arrive, transfer to hotel, leisure time."},
+            {"day":"Day 2","title":"City Sightseeing","details":"Local attractions, markets, evening leisure."},
+            {"day":"Day 3","title":"Excursion Day","details":"Scenic excursion with guide, photo stops."},
+            {"day":"Day 4","title":"Departure","details":"Breakfast, checkout, transfer to airport."},
+        ],
         "services":["Tour Packages","Visa Assistance","Hotel Bookings",
                     "Flight Bookings","Travel Insurance"],
         "hashtags":f"#{dest.replace(' ','')} #Travel #TourPackage #India",
@@ -262,7 +266,7 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PREMIUM IMAGE PALETTE EXTRACTION (AUTO THEME)
+# PREMIUM PALETTE EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _rgb_to_hex(rgb):
@@ -273,10 +277,6 @@ def _brightness(rgb):
     return (0.299*r + 0.587*g + 0.114*b)
 
 def extract_palette_from_photo(img_bytes: bytes):
-    """
-    Returns dict with accent, primary, dark, text_on_dark, price_bg.
-    Uses simple quantization (fast, no heavy libs).
-    """
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
         img = img.resize((180, 180))
@@ -319,20 +319,15 @@ def extract_palette_from_photo(img_bytes: bytes):
             "price_bg": _rgb_to_hex(price_bg),
             "text_on_dark": text_on_dark,
         }
-
     except Exception:
         return {}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PPTX DESIGN HELPERS
+# PPTX HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _set_shape_alpha(shape, alpha=65000):
-    """
-    alpha: 0 = transparent
-    alpha: 100000 = opaque
-    """
     try:
         sp = shape._element
         solid = sp.find(".//" + qn("a:solidFill"))
@@ -437,7 +432,7 @@ def _shadow_card(slide, x, y, w, h):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DYNAMIC TEXT SCALING
+# SMART FONT
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _smart_font_size(text: str, max_chars: int, base: int, min_size: int = 10):
@@ -480,11 +475,6 @@ def _add_picture(slide, img_bytes, x, y, w, h, dpi=180):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def detect_best_text_side(img_bytes: bytes) -> str:
-    """
-    Returns: "left" or "right"
-    Checks average brightness of left and right halves.
-    Places text on the darker half.
-    """
     try:
         img = Image.open(io.BytesIO(img_bytes)).convert("L")
         img = img.resize((600, 300))
@@ -578,13 +568,199 @@ def _draw_hotel_cards(slide, itinerary, t, start_y, width):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PREMIUM 2-SLIDE PPTX BUILDER
+# COLLAGE AUTO LAYOUT (2–6 PHOTOS)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
+def _auto_collage(slide, photos, x, y, w, h):
+    """
+    Best layout depending on photo count.
+    """
+    n = len(photos)
+    if n <= 0:
+        return
+
+    if n == 1:
+        _add_picture(slide, photos[0], x, y, w, h)
+        return
+
+    if n == 2:
+        _add_picture(slide, photos[0], x, y, w/2-0.05, h)
+        _add_picture(slide, photos[1], x+w/2+0.05, y, w/2-0.05, h)
+        return
+
+    if n == 3:
+        _add_picture(slide, photos[0], x, y, w*0.6, h)
+        _add_picture(slide, photos[1], x+w*0.6+0.05, y, w*0.4-0.05, h/2-0.05)
+        _add_picture(slide, photos[2], x+w*0.6+0.05, y+h/2+0.05, w*0.4-0.05, h/2-0.05)
+        return
+
+    if n == 4:
+        _add_picture(slide, photos[0], x, y, w*0.55, h)
+        _add_picture(slide, photos[1], x+w*0.55+0.05, y, w*0.45-0.05, h/3-0.05)
+        _add_picture(slide, photos[2], x+w*0.55+0.05, y+h/3+0.05, w*0.45-0.05, h/3-0.05)
+        _add_picture(slide, photos[3], x+w*0.55+0.05, y+2*h/3+0.05, w*0.45-0.05, h/3-0.05)
+        return
+
+    if n == 5:
+        _add_picture(slide, photos[0], x, y, w*0.6, h*0.6)
+        _add_picture(slide, photos[1], x+w*0.6+0.05, y, w*0.4-0.05, h*0.3-0.05)
+        _add_picture(slide, photos[2], x+w*0.6+0.05, y+h*0.3+0.05, w*0.4-0.05, h*0.3-0.05)
+        _add_picture(slide, photos[3], x, y+h*0.6+0.05, w*0.5-0.05, h*0.4-0.05)
+        _add_picture(slide, photos[4], x+w*0.5+0.05, y+h*0.6+0.05, w*0.5-0.05, h*0.4-0.05)
+        return
+
+    # n >= 6
+    _add_picture(slide, photos[0], x, y, w*0.65, h*0.6)
+    _add_picture(slide, photos[1], x+w*0.65+0.05, y, w*0.35-0.05, h*0.3-0.05)
+    _add_picture(slide, photos[2], x+w*0.65+0.05, y+h*0.3+0.05, w*0.35-0.05, h*0.3-0.05)
+
+    _add_picture(slide, photos[3], x, y+h*0.6+0.05, w*0.33-0.05, h*0.4-0.05)
+    _add_picture(slide, photos[4], x+w*0.33+0.05, y+h*0.6+0.05, w*0.33-0.05, h*0.4-0.05)
+    _add_picture(slide, photos[5], x+w*0.66+0.05, y+h*0.6+0.05, w*0.34-0.05, h*0.4-0.05)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SLIDE 3 — ITINERARY BUILDER
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _slide3_itinerary(slide, t, content, photos, logo_bytes, W, H):
+
+    # background
+    _add_rect(slide, 0, 0, W, H, "ffffff")
+
+    # header band
+    _add_rect(slide, 0, 0, W, 1.2, t["dark"])
+    _add_rect(slide, 0, 1.15, W, 0.06, t["accent"])
+
+    if logo_bytes:
+        _add_picture(slide, logo_bytes, 0.25, 0.2, 1.2, 0.7)
+
+    # Title
+    title = f"{content.get('destination','').upper()} ITINERARY"
+    _add_text(slide, title,
+              1.55, 0.25, W-1.8, 0.5,
+              font_size=24, bold=True,
+              color_hex=t.get("text_on_dark","ffffff"),
+              font_name="Aptos Display")
+
+    _add_text(slide, content.get("duration",""),
+              1.55, 0.75, W-1.8, 0.3,
+              font_size=12, bold=True,
+              color_hex=t["accent2"])
+
+    # hero side image
+    if photos:
+        _add_picture(slide, photos[0], W-2.9, 1.45, 2.6, 2.0)
+        ov = _add_rect(slide, W-2.9, 1.45, 2.6, 2.0, t["dark"])
+        _set_shape_alpha(ov, 20000)
+
+    # watermark destination
+    wm = slide.shapes.add_textbox(Inches(0.25), Inches(1.35), Inches(W-0.5), Inches(1.0))
+    tf = wm.text_frame
+    tf.clear()
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT
+    r = p.add_run()
+    r.text = content.get("destination","").upper()
+    r.font.size = Pt(56)
+    r.font.bold = True
+    r.font.name = "Aptos Display"
+    r.font.color.rgb = _rgb(t["primary"])
+    # make watermark very light
+    try:
+        r.font.color.brightness = 0.7
+    except Exception:
+        pass
+
+    # itinerary list
+    CUR_Y = 1.5
+    day_plan = content.get("day_plan", [])
+
+    _add_text(slide, "DAY-WISE PLAN",
+              0.25, CUR_Y, 3.0, 0.3,
+              font_size=12, bold=True,
+              color_hex=t["primary"])
+    CUR_Y += 0.4
+
+    card_h = 0.85
+    for dp in day_plan[:7]:
+        day = dp.get("day","Day")
+        title = dp.get("title","")
+        details = dp.get("details","")
+
+        _shadow_card(slide, 0.25, CUR_Y, W-3.4, card_h)
+        _glass_card(slide, 0.25, CUR_Y, W-3.4, card_h)
+
+        badge = _add_rounded_rect(slide, 0.35, CUR_Y+0.18, 0.9, 0.45, t["accent"])
+        _add_text_in_shape(badge, day.upper(),
+                           font_size=10, bold=True,
+                           color_hex="000000")
+
+        _add_text(slide, title,
+                  1.3, CUR_Y+0.15, W-4.8, 0.3,
+                  font_size=12, bold=True,
+                  color_hex=t["primary"])
+
+        _add_text(slide, details,
+                  1.3, CUR_Y+0.45, W-4.8, 0.35,
+                  font_size=9,
+                  color_hex="333333")
+
+        CUR_Y += card_h + 0.12
+
+    # right panel: inclusions + services
+    panel_x = W-2.9
+    _add_rounded_rect(slide, panel_x, 3.6, 2.6, H-3.85, t["primary2"])
+    _set_shape_alpha(slide.shapes[-1], 95000)
+
+    _add_text(slide, "INCLUSIONS",
+              panel_x+0.15, 3.75, 2.3, 0.25,
+              font_size=11, bold=True,
+              color_hex=t.get("text_on_dark","ffffff"))
+
+    y2 = 4.05
+    for inc in content.get("inclusions", [])[:7]:
+        _add_text(slide, f"✓ {inc}",
+                  panel_x+0.15, y2, 2.3, 0.25,
+                  font_size=9,
+                  color_hex=t.get("text_on_dark","ffffff"))
+        y2 += 0.3
+
+    y2 += 0.1
+    _add_text(slide, "SERVICES",
+              panel_x+0.15, y2, 2.3, 0.25,
+              font_size=11, bold=True,
+              color_hex=t["accent2"])
+    y2 += 0.32
+
+    for s in content.get("services", [])[:6]:
+        _add_text(slide, f"• {s}",
+                  panel_x+0.15, y2, 2.3, 0.25,
+                  font_size=9,
+                  color_hex=t.get("text_on_dark","ffffff"))
+        y2 += 0.28
+
+    # footer
+    _add_rect(slide, 0, H-0.8, W, 0.8, t["dark"])
+    _add_text(slide, f"📞 {content.get('phone','')}   🌐 {content.get('website','')}",
+              0.25, H-0.62, W-0.5, 0.3,
+              font_size=10, bold=True,
+              color_hex=t.get("text_on_dark","ffffff"),
+              align=PP_ALIGN.CENTER)
+
+    qr = _fetch_qr(content.get("website","www.example.com"), 150)
+    if qr:
+        _add_picture(slide, qr, W-1.55, H-0.75, 0.7, 0.7)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PREMIUM PPTX BUILDER (3 SLIDES)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_premium_3slide_pptx(content, theme_name, photos, logo_bytes=None):
     t = THEMES.get(theme_name, THEMES["🏅 Classic Navy Gold"]).copy()
 
-    # AUTO PALETTE EXTRACTION FROM HERO PHOTO
+    # AUTO THEME FROM PHOTO
     if photos and len(photos) > 0:
         palette = extract_palette_from_photo(photos[0])
         if palette:
@@ -621,6 +797,23 @@ def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
 
     ov2 = _add_rect(slide1, 0, HERO_H-1.4, W, 1.4, t["dark"])
     _set_shape_alpha(ov2, 80000)
+
+    # watermark destination
+    wm = slide1.shapes.add_textbox(Inches(0.3), Inches(0.7), Inches(W-0.6), Inches(1.1))
+    tf = wm.text_frame
+    tf.clear()
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT if text_side=="left" else PP_ALIGN.RIGHT
+    r = p.add_run()
+    r.text = content.get("destination","").upper()
+    r.font.size = Pt(54)
+    r.font.bold = True
+    r.font.name = "Aptos Display"
+    r.font.color.rgb = _rgb(t["accent2"])
+    try:
+        r.font.color.brightness = 0.8
+    except Exception:
+        pass
 
     if logo_bytes:
         if text_side == "left":
@@ -675,23 +868,10 @@ def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
 
     CUR_Y += 0.9
 
-    # collage
-    if len(photos) >= 4:
-        collage_h = 1.7
-        _add_picture(slide1, photos[1], 0.25, CUR_Y, W*0.58, collage_h)
-        _add_picture(slide1, photos[2], W*0.58+0.28, CUR_Y, W*0.42-0.53, collage_h/2)
-        _add_picture(slide1, photos[3], W*0.58+0.28, CUR_Y+collage_h/2, W*0.42-0.53, collage_h/2)
-        CUR_Y += collage_h + 0.25
-
-    elif len(photos) == 3:
-        collage_h = 1.6
-        _add_picture(slide1, photos[1], 0.25, CUR_Y, W*0.5, collage_h)
-        _add_picture(slide1, photos[2], W*0.5+0.28, CUR_Y, W*0.5-0.53, collage_h)
-        CUR_Y += collage_h + 0.25
-
-    elif len(photos) == 2:
-        collage_h = 1.4
-        _add_picture(slide1, photos[1], 0.25, CUR_Y, W-0.5, collage_h)
+    # auto collage (uses photos[1:])
+    if len(photos) > 1:
+        collage_h = 1.85
+        _auto_collage(slide1, photos[1:], 0.25, CUR_Y, W-0.5, collage_h)
         CUR_Y += collage_h + 0.25
 
     # highlights
@@ -812,7 +992,7 @@ def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
     frame.line.width = Pt(2)
 
     # ─────────────────────────────────────────
-    # SLIDE 2 — STORY FORMAT (9:16)
+    # SLIDE 2 — STORY FORMAT
     # ─────────────────────────────────────────
     prs.slide_width = Inches(STORY_W)
     prs.slide_height = Inches(STORY_H)
@@ -839,6 +1019,19 @@ def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
 
     panel_y = H2*0.55
     _add_rect(slide2, 0, panel_y, W2, H2-panel_y, t["primary"])
+
+    # watermark
+    wm2 = slide2.shapes.add_textbox(Inches(0.2), Inches(0.8), Inches(W2-0.4), Inches(0.9))
+    tf = wm2.text_frame
+    tf.clear()
+    p = tf.paragraphs[0]
+    p.alignment = PP_ALIGN.LEFT if story_text_side=="left" else PP_ALIGN.RIGHT
+    r = p.add_run()
+    r.text = content.get("destination","").upper()
+    r.font.size = Pt(38)
+    r.font.bold = True
+    r.font.name = "Aptos Display"
+    r.font.color.rgb = _rgb(t["accent2"])
 
     if logo_bytes:
         if story_text_side == "left":
@@ -926,253 +1119,87 @@ def build_premium_2slide_pptx(content, theme_name, photos, logo_bytes=None):
               color_hex=t["accent2"],
               align=PP_ALIGN.CENTER)
 
+    # ─────────────────────────────────────────
+    # SLIDE 3 — ITINERARY PAGE
+    # ─────────────────────────────────────────
+    prs.slide_width = Inches(SLIDE_W)
+    prs.slide_height = Inches(SLIDE_H)
+    slide3 = prs.slides.add_slide(prs.slide_layouts[6])
+    _slide3_itinerary(slide3, t, content, photos, logo_bytes, SLIDE_W, SLIDE_H)
+
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAGE (STREAMLIT UI)
+# STREAMLIT UI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def render():
 
-    st.markdown("""
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@400;500;600&display=swap');
-    .hero { font-family:'Syne',sans-serif;font-size:2.2rem;font-weight:800;
-            background:linear-gradient(120deg,#c9a84c,#1a1a5e);
-            -webkit-background-clip:text;-webkit-text-fill-color:transparent; }
-    .sub  { color:#6b7280;font-size:.9rem;margin-top:2px; }
-    .bdg  { display:inline-block;padding:3px 12px;border-radius:20px;
-            font-size:.68rem;font-weight:700;letter-spacing:.06em;
-            margin-right:6px;margin-bottom:10px; }
-    .b1   { background:linear-gradient(135deg,#1a1a5e,#c9a84c);color:#fff; }
-    .b2   { background:linear-gradient(135deg,#065f46,#0284c7);color:#fff; }
-    .canva-tip { background:#1e293b;border:1px solid #334155;border-radius:8px;
-                 padding:10px 14px;font-size:.82rem;color:#94a3b8;margin:8px 0; }
-    div[data-testid="stTabs"] button[aria-selected="true"] {
-      border-bottom:2px solid #c9a84c !important;color:#c9a84c !important; }
-    </style>
-    """, unsafe_allow_html=True)
+    st.title("✈ Premium AI Travel Flyer Generator (PPTX)")
+    st.caption("3-slide output: A4 Flyer + Story + Day-wise Itinerary")
 
-    st.markdown('<span class="bdg b1">✦ PPTX → CANVA READY</span>'
-                '<span class="bdg b2">🤖 ONE-PROMPT AI</span>', unsafe_allow_html=True)
-    st.markdown('<div class="hero">✈ AI Travel Flyer Studio</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub">One line → AI generates everything → '
-                'Download PPTX → Import to Canva → Edit anything</div>', unsafe_allow_html=True)
+    theme_name = st.selectbox("Theme", list(THEMES.keys()))
 
-    st.markdown("""
-    <div class="canva-tip">
-    📌 <b>How to edit in Canva:</b>
-    Download PPTX → Go to <b>canva.com</b> → Click <b>Create a design</b> →
-    <b>Import file</b> → Upload your .pptx →
-    Every element is editable!
-    </div>
-    """, unsafe_allow_html=True)
-
-    st.markdown("---")
-
-    # ── BRAND KIT ─────────────────────────────────────────────────────────────
-    with st.expander("🏷️ Brand Kit  —  Logo · Contact Info · API Keys", expanded=False):
-        r1, r2 = st.columns(2)
-        with r1:
-            st.markdown("**🖼️ Company Logo**")
-            lu = st.file_uploader("PNG/JPG", type=["png","jpg","jpeg"], key="bk_logo")
-            if lu:
-                lu.seek(0)
-                st.session_state["brand_logo"] = lu.read()
-            if st.session_state.get("brand_logo"):
-                st.image(st.session_state["brand_logo"], width=120)
-                if st.button("✕ Remove Logo", key="rm_logo"):
-                    st.session_state.pop("brand_logo", None)
-
-        with r2:
-            st.markdown("**🔗 Brand Info**")
-            for bk, label, ph in [
-                ("bk_company","Company Name","7 Wonders World Travels Pvt Ltd"),
-                ("bk_phone",  "Phone",       "+91 97112 81598"),
-                ("bk_email",  "Email",        "info@7wwtravels.com"),
-                ("bk_website","Website",      "www.7wwtravels.com"),
-                ("bk_fb",     "Facebook",     "7wwtravels"),
-                ("bk_ig",     "Instagram",    "@7ww_travels"),
-                ("bk_yt",     "YouTube",      "@7wwtravels"),
-            ]:
-                v = st.text_input(label, value=st.session_state.get(bk,""), placeholder=ph)
-                if v:
-                    st.session_state[bk] = v
-
-        st.markdown("---")
-        k1, k2 = st.columns(2)
-        with k1:
-            gq = st.text_input("⚡ Groq API Key", type="password",
-                               value=st.session_state.get("groq_key",""),
-                               placeholder="gsk_xxxxxxxx")
-            if gq:
-                st.session_state["groq_key"] = gq.strip()
-            st.success("✓ Groq active") if _groq_key() else st.info("console.groq.com")
-
-        with k2:
-            gm = st.text_input("🔵 Gemini API Key (fallback)", type="password",
-                               value=st.session_state.get("gemini_key",""),
-                               placeholder="AIzaSy...")
-            if gm:
-                st.session_state["gemini_key"] = gm.strip()
-            st.success("✓ Gemini active") if _gemini_key() else st.info("aistudio.google.com")
-
-    logo_bytes = st.session_state.get("brand_logo")
-
-    st.markdown("---")
-
-    st.markdown("### ✍️ Describe your travel package in one line")
     free_text = st.text_area(
-        "", height=90, label_visibility="collapsed",
-        placeholder=(
-            "5 night 6 day Bhutan trip, 2 nights Thimphu, 1 night Punakha, 2 nights Paro, "
-            "breakfast & dinner, sightseeing, guide, price Rs 28777 per person, "
-            "valid till Sep 2026, company 7 Wonders, phone 97112 81598, website 7wwtravels.com"
-        ),
-        key="main_prompt",
+        "Enter Package Details",
+        height=120,
+        placeholder="Example: 5N/6D Bhutan, Thimphu 2N, Punakha 1N, Paro 2N, valid till Sep 2026, price 28777"
     )
+
+    logo_up = st.file_uploader("Upload Company Logo (optional)", type=["png","jpg","jpeg"])
+    logo_bytes = logo_up.read() if logo_up else None
 
     photos_input = st.file_uploader(
-        "📸 Upload 1-6 travel photos",
+        "Upload Photos (1-6)",
         type=["jpg","jpeg","png","webp"],
-        accept_multiple_files=True,
-        key="main_photos",
+        accept_multiple_files=True
     )
 
+    photos_raw = []
     if photos_input:
-        names = [p.name for p in photos_input]
-        if st.session_state.get("_photo_names") != names:
-            cached = []
-            for p in photos_input[:6]:
-                try:
-                    p.seek(0)
-                    cached.append(p.read())
-                except Exception:
-                    pass
-            st.session_state["_photos_raw"]  = cached
-            st.session_state["_photo_names"] = names
+        for p in photos_input[:6]:
+            p.seek(0)
+            photos_raw.append(p.read())
 
-    photos_raw: list = st.session_state.get("_photos_raw", [])
+    if st.button("Generate AI Content"):
+        with st.spinner("AI writing content..."):
+            ai = ai_generate_all(free_text, len(photos_raw))
+        st.session_state["ai"] = ai
 
-    if photos_raw:
-        cols = st.columns(min(len(photos_raw), 6))
-        for i, raw in enumerate(photos_raw):
-            try:
-                img = Image.open(io.BytesIO(raw))
-                scale = 110 / img.width
-                thumb = img.resize((110, int(img.height * scale)), Image.LANCZOS)
-                buf = io.BytesIO()
-                thumb.save(buf, format="JPEG", quality=80)
-                cols[i].image(buf.getvalue(), use_container_width=True)
-            except Exception:
-                cols[i].warning(f"Photo {i+1}")
-
-    c1, c2 = st.columns([3,1])
-    with c1:
-        gen_btn = st.button("🚀 Generate AI Content",
-                            type="primary",
-                            use_container_width=True,
-                            disabled=not free_text.strip())
-    with c2:
-        if not _llm_ok():
-            st.warning("Add API key ↑")
-        elif not free_text.strip():
-            st.info("Type package ↑")
-
-    if gen_btn and free_text.strip():
-        bk_extra = " ".join([
-            f", company: {st.session_state.get('bk_company','')}" if st.session_state.get('bk_company') else "",
-            f", phone: {st.session_state.get('bk_phone','')}" if st.session_state.get('bk_phone') else "",
-            f", email: {st.session_state.get('bk_email','')}" if st.session_state.get('bk_email') else "",
-            f", website: {st.session_state.get('bk_website','')}" if st.session_state.get('bk_website') else "",
-            f", facebook: {st.session_state.get('bk_fb','')}" if st.session_state.get('bk_fb') else "",
-            f", instagram: {st.session_state.get('bk_ig','')}" if st.session_state.get('bk_ig') else "",
-            f", youtube: {st.session_state.get('bk_yt','')}" if st.session_state.get('bk_yt') else "",
-        ])
-
-        with st.spinner("🤖 AI generating complete flyer content…"):
-            data = ai_generate_all(free_text + bk_extra, len(photos_raw))
-
-        for bk, dk in [("bk_company","company_name"),("bk_phone","phone"),
-                       ("bk_email","email"),("bk_website","website"),
-                       ("bk_fb","social_fb"),("bk_ig","social_ig"),("bk_yt","social_yt")]:
-            v = st.session_state.get(bk,"")
-            if v:
-                data[dk] = v
-
-        st.session_state["ai_data"] = data
-        st.success(f"✅ {data.get('headline','')} · Theme: {data.get('theme','')} · Price: {data.get('price','')}")
-
-    ai = st.session_state.get("ai_data", {})
-    st.markdown("---")
+    ai = st.session_state.get("ai")
 
     if not ai:
-        st.info("👆 Generate content first.")
+        st.info("Generate AI content first.")
         return
 
-    st.markdown("### 🎨 Build Premium PPTX (2 Slides)")
-    theme_keys = list(THEMES.keys())
-    ai_theme = ai.get("theme", "Classic Navy Gold")
-    theme_idx = next((i for i,k in enumerate(theme_keys) if ai_theme.split()[-1] in k), 0)
+    st.subheader("Edit Generated Copy (Optional)")
+    ai["headline"] = st.text_input("Headline", ai.get("headline",""))
+    ai["subheadline"] = st.text_input("Subheadline", ai.get("subheadline",""))
+    ai["duration"] = st.text_input("Duration", ai.get("duration",""))
+    ai["price"] = st.text_input("Price", ai.get("price",""))
+    ai["price_note"] = st.text_input("Price Note", ai.get("price_note",""))
+    ai["website"] = st.text_input("Website", ai.get("website",""))
+    ai["phone"] = st.text_input("Phone", ai.get("phone",""))
 
-    sel_theme = st.selectbox("Theme", theme_keys, index=theme_idx)
-
-    st.markdown("#### ✏️ Edit Copy")
-    ai["headline"]     = st.text_input("Headline", value=ai.get("headline",""))
-    ai["subheadline"]  = st.text_input("Subheadline", value=ai.get("subheadline",""))
-    ai["package_name"] = st.text_input("Package Name", value=ai.get("package_name",""))
-    ai["price"]        = st.text_input("Price", value=ai.get("price",""))
-    ai["price_note"]   = st.text_input("Price Note", value=ai.get("price_note",""))
-    ai["duration"]     = st.text_input("Duration", value=ai.get("duration",""))
-    ai["cta"]          = st.text_input("CTA Button", value=ai.get("cta","BOOK NOW"))
-
-    hl_raw = st.text_area("Highlights (one per line)",
-                          value="\n".join(ai.get("highlights",[])),
-                          height=100)
-    ai["highlights"] = [l.strip() for l in hl_raw.splitlines() if l.strip()]
-
-    incl_raw = st.text_area("Inclusions (one per line)",
-                            value="\n".join(ai.get("inclusions",[])),
-                            height=90)
-    ai["inclusions"] = [l.strip() for l in incl_raw.splitlines() if l.strip()]
-
-    itin_json = st.text_area("Itinerary JSON (optional edit)",
-                             value=json.dumps(ai.get("itinerary",[]), indent=2),
-                             height=150)
-    try:
-        ai["itinerary"] = json.loads(itin_json)
-    except Exception:
-        pass
-
-    if st.button("🎨 Build Premium PPTX (2 Slides)", type="primary", use_container_width=True):
-        with st.spinner("Building PPTX…"):
-            pptx_bytes = build_premium_2slide_pptx(
+    if st.button("🎨 Generate Premium PPTX (3 Slides)", type="primary"):
+        with st.spinner("Building PPTX..."):
+            pptx_bytes = build_premium_3slide_pptx(
                 content=ai,
-                theme_name=sel_theme,
+                theme_name=theme_name,
                 photos=photos_raw,
                 logo_bytes=logo_bytes
             )
-        st.session_state["final_pptx"] = pptx_bytes
 
-    pptx = st.session_state.get("final_pptx")
-    if pptx:
-        fname = ai.get("package_name","flyer").replace(" ","_")
         st.download_button(
-            "📥 Download Premium PPTX (2 Slides)",
-            data=pptx,
-            file_name=f"{fname}_premium_2slides.pptx",
-            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            use_container_width=True
+            "📥 Download PPTX",
+            data=pptx_bytes,
+            file_name="premium_flyer_3slides.pptx",
+            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
-        st.success("✅ PPTX Ready! Import into Canva for full editing.")
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     render()
