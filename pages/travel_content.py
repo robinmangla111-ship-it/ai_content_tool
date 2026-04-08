@@ -20,7 +20,7 @@ Add to requirements.txt:  python-pptx>=0.6.21
 """
 
 import streamlit as st
-import sys, os, io, json, re, zipfile, base64, requests
+import sys, os, io, json, re, zipfile, base64, requests, math
 from urllib.parse import quote as url_quote
 
 _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -29,12 +29,14 @@ if _ROOT not in sys.path:
 
 # ── python-pptx imports ───────────────────────────────────────────────────────
 from pptx import Presentation
-from pptx.util import Inches, Pt, Emu
+from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-from pptx.util import Inches, Pt
-import pptx.oxml.ns as pns
+from pptx.enum.shapes import MSO_AUTO_SHAPE_TYPE
+from pptx.oxml.xmlchemy import OxmlElement
+from pptx.oxml.ns import qn
 from lxml import etree
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # HELPERS
@@ -42,10 +44,12 @@ from lxml import etree
 
 def _get(sk, sec, ev=""):
     v = st.session_state.get(sk, "").strip()
-    if v: return v
+    if v:
+        return v
     try:
         v = str(st.secrets.get(sec, "")).strip()
-        if v: return v
+        if v:
+            return v
     except Exception:
         pass
     return os.getenv(ev, "").strip()
@@ -55,7 +59,7 @@ def _gemini_key(): return _get("gemini_key", "GEMINI_API_KEY", "GEMINI_API_KEY")
 def _llm_ok():     return bool(_groq_key() or _gemini_key())
 
 def guess_mime(raw: bytes) -> str:
-    if raw[:4] == b'\x89PNG':     return "image/png"
+    if raw[:4] == b'\x89PNG':      return "image/png"
     if raw[:3] == b'\xff\xd8\xff': return "image/jpeg"
     return "image/jpeg"
 
@@ -65,6 +69,7 @@ def _rgb(hex_str: str) -> RGBColor:
 
 def _inches(n): return Inches(n)
 def _pt(n):     return Pt(n)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DESIGN THEMES
@@ -113,7 +118,8 @@ THEMES = {
     },
 }
 
-CERT_NAMES = ["IATA", "OTAI", "adtoi", "NIMA", "ETAA", "Aussie Specialist", "Mauritius", "Türkiye"]
+CERT_NAMES = ["IATA", "OTAI", "ADTOI", "NIMA", "ETAA", "ISO", "TripAdvisor", "Google Rated"]
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # LLM
@@ -121,7 +127,8 @@ CERT_NAMES = ["IATA", "OTAI", "adtoi", "NIMA", "ETAA", "Aussie Specialist", "Mau
 
 def _groq(sys_p, usr_p, tokens=1100):
     key = _groq_key()
-    if not key: return ""
+    if not key:
+        return ""
     try:
         from groq import Groq
         r = Groq(api_key=key).chat.completions.create(
@@ -133,11 +140,13 @@ def _groq(sys_p, usr_p, tokens=1100):
         )
         return r.choices[0].message.content.strip()
     except Exception as e:
-        st.toast(f"Groq: {e}", icon="⚠️"); return ""
+        st.toast(f"Groq: {e}", icon="⚠️")
+        return ""
 
 def _gemini(prompt, tokens=1100):
     key = _gemini_key()
-    if not key: return ""
+    if not key:
+        return ""
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
     body = {"contents":[{"parts":[{"text":prompt}]}],
             "generationConfig":{"maxOutputTokens":tokens,"temperature":0.8,
@@ -147,7 +156,8 @@ def _gemini(prompt, tokens=1100):
         r.raise_for_status()
         return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception as e:
-        st.toast(f"Gemini: {e}", icon="⚠️"); return ""
+        st.toast(f"Gemini: {e}", icon="⚠️")
+        return ""
 
 def _llm(sys_p, usr_p, tokens=1100):
     out = _groq(sys_p, usr_p, tokens)
@@ -184,12 +194,17 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
     data = _parse_json(raw) if raw else {}
     dest = free_text.split()[0].title() if free_text else "India"
     defaults = {
-        "company_name":"Your Travel Company","package_name":f"{dest} Package",
-        "destination":dest,"headline":f"DISCOVER {dest.upper()}",
-        "subheadline":"Unforgettable Journeys | Expert Guided Tours",
-        "duration":"7 Days / 6 Nights","price":"₹24,999",
-        "price_label":"SPECIAL OFFER","price_note":"per person twin sharing",
-        "validity":"Limited Seats | T&C Apply","cta":"BOOK NOW",
+        "company_name":"Your Travel Company",
+        "package_name":f"{dest} Package",
+        "destination":dest,
+        "headline":f"DISCOVER {dest.upper()}",
+        "subheadline":"Unforgettable Journeys | Premium Holiday Deals",
+        "duration":"7 Days / 6 Nights",
+        "price":"₹24,999",
+        "price_label":"SPECIAL OFFER",
+        "price_note":"per person twin sharing",
+        "validity":"Limited Seats | T&C Apply",
+        "cta":"BOOK NOW",
         "highlights":[f"{dest} Sightseeing","Scenic Landscapes","Cultural Experiences",
                       "Heritage Sites","Local Cuisine","Guided Tours"],
         "inclusions":["Airport Transfers","Hotel Accommodation","Daily Breakfast",
@@ -201,74 +216,88 @@ From a one-line description, generate ALL flyer content. Return ONLY valid JSON:
         "instagram_caption":f"✈️ {dest} awaits! Book now. #{dest.replace(' ','')} #Travel",
         "facebook_caption":f"Amazing {dest} package available! Contact us.",
         "whatsapp_status":f"✈️ {dest} Package!\n📞 Call to Book!",
-        "youtube_title":f"{dest} Travel Package | Best Deals 2025",
+        "youtube_title":f"{dest} Travel Package | Best Deals 2026",
         "youtube_desc":f"Discover {dest} with our amazing package.",
         "reel_script":f"{dest} is calling! Book your dream trip today!",
-        "website":"www.yourtravels.com","phone":"+91 98765 43210",
-        "email":"info@yourtravels.com","social_fb":"yourtravels",
-        "social_ig":"@yourtravels","social_yt":"@yourtravels",
+        "website":"www.yourtravels.com",
+        "phone":"+91 98765 43210",
+        "email":"info@yourtravels.com",
+        "social_fb":"yourtravels",
+        "social_ig":"@yourtravels",
+        "social_yt":"@yourtravels",
         "theme":"Classic Navy Gold",
     }
-    for k,v in defaults.items(): data.setdefault(k,v)
+    for k,v in defaults.items():
+        data.setdefault(k,v)
     return data
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# PPTX DRAWING HELPERS
+# PPTX DRAWING HELPERS (PREMIUM)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _add_rect(slide, x, y, w, h, fill_hex, alpha=None):
-    """Add a filled rectangle shape."""
-    shape = slide.shapes.add_shape(
-        1,  # MSO_SHAPE_TYPE.RECTANGLE
-        Inches(x), Inches(y), Inches(w), Inches(h)
-    )
-    shape.line.fill.background()  # no border
-    shape.line.width = 0
-    fill = shape.fill
-    fill.solid()
-    fill.fore_color.rgb = _rgb(fill_hex)
-    return shape
-
-def _add_rounded_rect(slide, x, y, w, h, fill_hex, radius_pt=8):
-    """Add a rounded rectangle."""
-    shape = slide.shapes.add_shape(
-        5,  # ROUNDED_RECTANGLE
-        Inches(x), Inches(y), Inches(w), Inches(h)
-    )
-    shape.line.fill.background()
-    shape.line.width = 0
-    shape.fill.solid()
-    shape.fill.fore_color.rgb = _rgb(fill_hex)
-    # Set corner radius via XML
+def _set_shape_alpha(shape, alpha=65000):
+    """
+    alpha: 0 = transparent, 100000 = opaque
+    """
     try:
         sp = shape._element
-        prstGeom = sp.find('.//' + pns.qn('a:prstGeom'))
-        if prstGeom is not None:
-            avLst = prstGeom.find(pns.qn('a:avLst'))
-            if avLst is None:
-                avLst = etree.SubElement(prstGeom, pns.qn('a:avLst'))
-            gd = etree.SubElement(avLst, pns.qn('a:gd'))
-            gd.set('name', 'adj')
-            # radius as fraction of 50000 (50000 = fully round)
-            adj_val = min(50000, int(radius_pt * 1000))
-            gd.set('fmla', f'val {adj_val}')
+        solid = sp.find(".//" + qn("a:solidFill"))
+        if solid is not None:
+            srgb = solid.find(qn("a:srgbClr"))
+            if srgb is not None:
+                a = OxmlElement("a:alpha")
+                a.set("val", str(alpha))
+                srgb.append(a)
     except Exception:
         pass
-    return shape
+
+def _no_border(shape):
+    try:
+        shape.line.fill.background()
+        shape.line.width = Pt(0)
+    except Exception:
+        pass
+
+def _add_rect(slide, x, y, w, h, fill_hex):
+    shp = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+        Inches(x), Inches(y), Inches(w), Inches(h)
+    )
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = _rgb(fill_hex)
+    _no_border(shp)
+    return shp
+
+def _add_rounded_rect(slide, x, y, w, h, fill_hex):
+    shp = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.ROUNDED_RECTANGLE,
+        Inches(x), Inches(y), Inches(w), Inches(h)
+    )
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = _rgb(fill_hex)
+    _no_border(shp)
+    return shp
+
+def _add_circle(slide, x, y, d, fill_hex):
+    shp = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.OVAL,
+        Inches(x), Inches(y), Inches(d), Inches(d)
+    )
+    shp.fill.solid()
+    shp.fill.fore_color.rgb = _rgb(fill_hex)
+    _no_border(shp)
+    return shp
 
 def _add_text(slide, text, x, y, w, h,
               font_size=12, bold=False, italic=False,
               color_hex="000000", align=PP_ALIGN.LEFT,
-              font_name="Calibri", wrap=True, valign="top",
-              margin_left=0.05, margin_right=0.05,
-              margin_top=0.03, margin_bottom=0.03):
-    """Add a text box with full control."""
-    txBox = slide.shapes.add_textbox(
-        Inches(x), Inches(y), Inches(w), Inches(h)
-    )
+              font_name="Aptos", wrap=True,
+              margin_left=0.08, margin_right=0.08,
+              margin_top=0.04, margin_bottom=0.04):
+    txBox = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
     tf = txBox.text_frame
     tf.word_wrap = wrap
-    # Margins
     tf.margin_left   = Inches(margin_left)
     tf.margin_right  = Inches(margin_right)
     tf.margin_top    = Inches(margin_top)
@@ -278,64 +307,60 @@ def _add_text(slide, text, x, y, w, h,
     p.alignment = align
     run = p.add_run()
     run.text = str(text)
-    run.font.size  = Pt(font_size)
-    run.font.bold  = bold
+    run.font.size = Pt(font_size)
+    run.font.bold = bold
     run.font.italic = italic
     run.font.color.rgb = _rgb(color_hex)
-    run.font.name  = font_name
+    run.font.name = font_name
     return txBox
 
 def _add_text_in_shape(shape, text, font_size=12, bold=False,
-                        color_hex="ffffff", align=PP_ALIGN.CENTER,
-                        font_name="Calibri"):
-    """Write text into an existing shape's text frame."""
+                       color_hex="ffffff", align=PP_ALIGN.CENTER,
+                       font_name="Aptos"):
     tf = shape.text_frame
+    tf.clear()
     tf.word_wrap = True
     tf.margin_left   = Inches(0.08)
     tf.margin_right  = Inches(0.08)
     tf.margin_top    = Inches(0.04)
     tf.margin_bottom = Inches(0.04)
+
     p = tf.paragraphs[0]
     p.alignment = align
     run = p.add_run()
     run.text = str(text)
-    run.font.size  = Pt(font_size)
-    run.font.bold  = bold
+    run.font.size = Pt(font_size)
+    run.font.bold = bold
     run.font.color.rgb = _rgb(color_hex)
-    run.font.name  = font_name
+    run.font.name = font_name
 
 def _add_picture(slide, img_bytes, x, y, w, h):
-    """Embed an image, cropped/positioned."""
-    buf = io.BytesIO(img_bytes)
     try:
-        slide.shapes.add_picture(buf, Inches(x), Inches(y), Inches(w), Inches(h))
+        buf = io.BytesIO(img_bytes)
+        return slide.shapes.add_picture(buf, Inches(x), Inches(y), Inches(w), Inches(h))
     except Exception:
-        pass  # bad image → skip silently
+        return None
 
-def _add_picture_bg(slide, img_bytes, x, y, w, h, slide_w_emu, slide_h_emu):
-    """Add picture and send to back via XML."""
-    buf = io.BytesIO(img_bytes)
+def _send_to_back(slide, shape):
     try:
-        pic = slide.shapes.add_picture(buf, Inches(x), Inches(y), Inches(w), Inches(h))
-        # Send to back
-        slide.shapes._spTree.remove(pic._element)
-        slide.shapes._spTree.insert(2, pic._element)
+        slide.shapes._spTree.remove(shape._element)
+        slide.shapes._spTree.insert(2, shape._element)
     except Exception:
         pass
 
-def _add_line(slide, x1, y1, x2, y2, color_hex, width_pt=1.5):
-    """Add a horizontal or vertical line."""
-    from pptx.util import Pt as Pt2
-    connector = slide.shapes.add_connector(
-        1,  # STRAIGHT
-        Inches(x1), Inches(y1), Inches(x2), Inches(y2)
-    )
-    connector.line.color.rgb = _rgb(color_hex)
-    connector.line.width = Pt2(width_pt)
+def _glass_card(slide, x, y, w, h, alpha=70000):
+    card = _add_rounded_rect(slide, x, y, w, h, "ffffff")
+    _set_shape_alpha(card, alpha)
+    return card
 
-# ─────────────────────────────────────────────────────────────────────────────
-# QR CODE (free API, no auth)
-# ─────────────────────────────────────────────────────────────────────────────
+def _shadow_card(slide, x, y, w, h, radius=True):
+    shadow = _add_rounded_rect(slide, x+0.04, y+0.05, w, h, "000000")
+    _set_shape_alpha(shadow, 22000)
+    return shadow
+
+def _add_divider(slide, x, y, w, color_hex="ffffff", alpha=50000):
+    d = _add_rect(slide, x, y, w, 0.02, color_hex)
+    _set_shape_alpha(d, alpha)
 
 def _fetch_qr(text: str, size: int = 150) -> bytes | None:
     try:
@@ -347,376 +372,398 @@ def _fetch_qr(text: str, size: int = 150) -> bytes | None:
         pass
     return None
 
+
 # ─────────────────────────────────────────────────────────────────────────────
-# PPTX FLYER BUILDER
+# PREMIUM PPTX FLYER BUILDER (A4 POSTER STYLE)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Slide dimensions: A4 portrait = 8.27" × 11.69"
 SLIDE_W = 8.27
 SLIDE_H = 11.69
 
+
 def build_flyer_pptx(
-    content:    dict,
+    content: dict,
     theme_name: str,
-    photos:     list,        # list of raw bytes
+    photos: list,
     logo_bytes: bytes | None,
     cert_bytes: bytes | None,
-    variant:    str = "package",  # "package" | "services"
+    variant: str = "package",
 ) -> bytes:
-    """Build and return a .pptx flyer as bytes."""
 
     t = THEMES.get(theme_name, THEMES["🏅 Classic Navy Gold"])
     prs = Presentation()
 
-    # Custom slide size: A4 portrait
     prs.slide_width  = Inches(SLIDE_W)
     prs.slide_height = Inches(SLIDE_H)
 
-    # Blank slide layout
-    blank = prs.slide_layouts[6]
-    slide = prs.slides.add_slide(blank)
-
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
     W = SLIDE_W
 
-    # ── 1. WHITE BACKGROUND ─────────────────────────────────────────────────
+    # Background
     _add_rect(slide, 0, 0, W, SLIDE_H, "ffffff")
 
-    # ── 2. HEADER STRIP (dark, with logo + company name) ────────────────────
-    HEADER_H = 1.05
-    _add_rect(slide, 0, 0, W, HEADER_H, t["dark"])
-
-    # Logo (left)
-    logo_x = 0.18
-    if logo_bytes:
-        _add_picture(slide, logo_bytes, logo_x, 0.12, 1.3, 0.78)
-        company_x = logo_x + 1.45
-    else:
-        # Plane icon placeholder circle
-        circ = _add_rounded_rect(slide, logo_x, 0.2, 0.65, 0.65, t["accent"], radius_pt=200)
-        _add_text_in_shape(circ, "✈", font_size=22, bold=True,
-                           color_hex="000000", align=PP_ALIGN.CENTER)
-        company_x = logo_x + 0.85
-
-    # Company name
-    _add_text(slide, content.get("company_name","YOUR TRAVEL COMPANY").upper(),
-              company_x, 0.14, W - company_x - 0.8, 0.42,
-              font_size=16, bold=True, color_hex=t["text_on_dark"],
-              font_name="Calibri", align=PP_ALIGN.LEFT)
-    _add_text(slide, "YOUR ULTIMATE TRAVEL PARTNER",
-              company_x, 0.54, W - company_x - 0.8, 0.28,
-              font_size=8, bold=False, color_hex=t["accent"],
-              align=PP_ALIGN.LEFT)
-    # Since 2015 (top right)
-    _add_text(slide, "SINCE 2015",
-              W - 1.1, 0.16, 0.9, 0.28,
-              font_size=8, bold=True, color_hex=t["accent2"],
-              align=PP_ALIGN.RIGHT)
-    _add_text(slide, content.get("website",""),
-              W - 1.8, 0.46, 1.6, 0.22,
-              font_size=7, color_hex=t["muted"], align=PP_ALIGN.RIGHT)
-
-    # ── 3. HERO PHOTO ────────────────────────────────────────────────────────
-    HERO_Y = HEADER_H
-    HERO_H = 2.6
+    # ========== HERO PHOTO ==========
+    HERO_Y = 0
+    HERO_H = 3.6
 
     if photos:
-        _add_picture(slide, photos[0], 0, HERO_Y, W, HERO_H)
+        pic = _add_picture(slide, photos[0], 0, HERO_Y, W, HERO_H)
+        if pic:
+            _send_to_back(slide, pic)
 
-    # Dark gradient overlay on photo
-    _add_rect(slide, 0, HERO_Y + HERO_H - 1.4, W, 1.4, t["dark"])
-    # Make it semi-transparent via XML fill alpha
+    # cinematic overlay
+    ov1 = _add_rect(slide, 0, HERO_Y, W, HERO_H, t["dark"])
+    _set_shape_alpha(ov1, 25000)
+
+    ov2 = _add_rect(slide, 0, HERO_Y + HERO_H - 1.6, W, 1.6, t["dark"])
+    _set_shape_alpha(ov2, 65000)
+
+    # watermark destination big
+    _add_text(slide, content.get("destination", "").upper(),
+              0.18, HERO_Y + 0.9, W - 0.3, 1.0,
+              font_size=52, bold=True, color_hex="ffffff",
+              align=PP_ALIGN.LEFT, font_name="Aptos Display")
+
+    # watermark fade look
     try:
-        last_sp = slide.shapes[-1]._element
-        spPr = last_sp.find('.//' + pns.qn('a:solidFill'))
-        if spPr is not None:
-            srgb = spPr.find(pns.qn('a:srgbClr'))
-            if srgb is None:
-                srgb = spPr.find(pns.qn('a:sysClr'))
-            if srgb is not None:
-                alpha_el = etree.SubElement(srgb, pns.qn('a:alpha'))
-                alpha_el.set('val', '75000')  # 75% opaque
+        last = slide.shapes[-1]
+        _set_shape_alpha(last, 15000)
     except Exception:
         pass
 
-    # Offer pill / badge
-    badge = _add_rounded_rect(slide, 0.25, HERO_Y + 0.18, 1.4, 0.35,
-                               t["accent"], radius_pt=12)
-    _add_text_in_shape(badge, content.get("price_label","SPECIAL OFFER"),
-                       font_size=8, bold=True, color_hex="000000",
-                       align=PP_ALIGN.CENTER)
+    # logo top-left
+    if logo_bytes:
+        _add_picture(slide, logo_bytes, 0.25, 0.22, 1.3, 0.72)
+    else:
+        pill = _glass_card(slide, 0.25, 0.22, 1.4, 0.55, alpha=60000)
+        _add_text_in_shape(pill, "✈ TRAVEL", font_size=12, bold=True,
+                           color_hex=t["accent2"], align=PP_ALIGN.CENTER)
 
-    # Hero headline (bottom of photo area)
-    _add_text(slide, content.get("headline","DISCOVER THE WORLD"),
-              0.22, HERO_Y + HERO_H - 1.25, W - 0.44, 0.72,
-              font_size=26, bold=True, color_hex=t["text_on_dark"],
-              font_name="Calibri", align=PP_ALIGN.LEFT)
-    _add_text(slide, content.get("subheadline",""),
-              0.22, HERO_Y + HERO_H - 0.52, W - 0.44, 0.3,
-              font_size=11, color_hex=t["accent"], align=PP_ALIGN.LEFT)
+    # badge top-right
+    badge_shadow = _shadow_card(slide, W - 2.05, 0.26, 1.75, 0.5)
+    badge = _add_rounded_rect(slide, W - 2.1, 0.22, 1.75, 0.5, t["accent"])
+    _add_text_in_shape(badge, content.get("price_label", "SPECIAL OFFER"),
+                       font_size=10, bold=True, color_hex="000000")
 
-    CUR_Y = HERO_Y + HERO_H + 0.12
+    # headline
+    _add_text(slide, content.get("headline", "DISCOVER"),
+              0.25, HERO_Y + HERO_H - 1.35, W - 0.5, 0.7,
+              font_size=30, bold=True, color_hex=t["text_on_dark"],
+              align=PP_ALIGN.LEFT, font_name="Aptos Display")
 
-    # ── 4. DURATION BADGE ROW ─────────────────────────────────────────────────
-    dur_bg = _add_rounded_rect(slide, 0.22, CUR_Y, 2.4, 0.38, t["primary2"], radius_pt=8)
-    _add_text_in_shape(dur_bg, f"⏱  {content.get('duration','')}",
-                       font_size=10, bold=True, color_hex=t["accent2"],
-                       align=PP_ALIGN.CENTER)
+    _add_text(slide, content.get("subheadline", ""),
+              0.25, HERO_Y + HERO_H - 0.65, W - 0.5, 0.35,
+              font_size=12, bold=False, color_hex=t["accent2"],
+              align=PP_ALIGN.LEFT, font_name="Aptos")
 
-    pkg_bg = _add_rounded_rect(slide, 2.8, CUR_Y, W - 3.0, 0.38, t["hl_bg"], radius_pt=8)
-    _add_text_in_shape(pkg_bg, content.get("package_name",""),
-                       font_size=10, bold=True, color_hex=t["primary"],
-                       align=PP_ALIGN.CENTER)
+    CUR_Y = HERO_Y + HERO_H + 0.18
 
-    CUR_Y += 0.52
+    # ========== DURATION + PACKAGE NAME ==========
+    dur = _glass_card(slide, 0.25, CUR_Y, 2.5, 0.55, alpha=65000)
+    _add_text_in_shape(dur, f"⏱ {content.get('duration','')}",
+                       font_size=12, bold=True,
+                       color_hex=t["primary"], align=PP_ALIGN.CENTER)
 
-    # ── 5. ITINERARY AT A GLANCE ──────────────────────────────────────────────
+    pkg = _glass_card(slide, 2.9, CUR_Y, W - 3.15, 0.55, alpha=65000)
+    _add_text_in_shape(pkg, content.get("package_name",""),
+                       font_size=12, bold=True,
+                       color_hex=t["primary"], align=PP_ALIGN.CENTER)
+
+    CUR_Y += 0.7
+
+    # ========== ICON FEATURE STRIP ==========
+    features = [
+        ("🏨", "Hotels"),
+        ("🍽️", "Meals"),
+        ("🚗", "Cab"),
+        ("🧑‍✈️", "Guide"),
+    ]
+
+    strip_shadow = _shadow_card(slide, 0.25, CUR_Y, W - 0.5, 0.8)
+    strip = _glass_card(slide, 0.25, CUR_Y, W - 0.5, 0.8, alpha=70000)
+
+    cell_w = (W - 0.5) / 4
+    for i,(ic,txt) in enumerate(features):
+        x = 0.25 + i*cell_w
+        _add_text(slide, ic, x, CUR_Y + 0.05, cell_w, 0.35,
+                  font_size=22, bold=True,
+                  color_hex="000000", align=PP_ALIGN.CENTER)
+        _add_text(slide, txt, x, CUR_Y + 0.45, cell_w, 0.25,
+                  font_size=9, bold=True,
+                  color_hex=t["primary"], align=PP_ALIGN.CENTER)
+
+    CUR_Y += 1.0
+
+    # ========== ITINERARY (CHIPS STYLE) ==========
     itin = content.get("itinerary", [])
     if itin:
-        itin_h = 1.05
-        _add_rect(slide, 0, CUR_Y, W, itin_h, t["primary"])
-
-        # Label
         _add_text(slide, "ITINERARY AT A GLANCE",
-                  0.22, CUR_Y + 0.06, W - 0.44, 0.24,
-                  font_size=8, bold=True, color_hex=t["accent"],
-                  align=PP_ALIGN.CENTER)
+                  0.25, CUR_Y, W - 0.5, 0.3,
+                  font_size=10, bold=True,
+                  color_hex=t["muted"], align=PP_ALIGN.LEFT)
 
-        n_stops  = min(len(itin), 4)
-        cell_w   = (W - 0.5) / max(n_stops, 1)
+        CUR_Y += 0.35
+
+        chip_y = CUR_Y
+        chip_h = 0.55
+        gap = 0.12
+
+        max_stops = min(len(itin), 4)
+        chip_w = (W - 0.5 - (gap * (max_stops - 1))) / max_stops
+
         for i, stop in enumerate(itin[:4]):
-            cx = 0.25 + i * cell_w
-            nights = stop.get("nights", 0)
+            cx = 0.25 + i*(chip_w + gap)
+            nights = stop.get("nights", "")
             city   = stop.get("city", "")
             hotel  = stop.get("hotel", "")
 
-            if nights and city:
-                # Nights circle
-                circ = _add_rounded_rect(slide, cx + cell_w/2 - 0.28,
-                                         CUR_Y + 0.32, 0.56, 0.38,
-                                         t["accent"], radius_pt=200)
-                _add_text_in_shape(circ, str(nights), font_size=14, bold=True,
-                                   color_hex="000000", align=PP_ALIGN.CENTER)
-                _add_text(slide, city.upper(),
-                          cx, CUR_Y + 0.72, cell_w, 0.2,
-                          font_size=8, bold=True, color_hex=t["text_on_dark"],
-                          align=PP_ALIGN.CENTER)
-                if hotel:
-                    _add_text(slide, hotel,
-                              cx, CUR_Y + 0.88, cell_w, 0.14,
-                              font_size=6.5, color_hex=t["muted"],
-                              align=PP_ALIGN.CENTER)
+            shadow = _shadow_card(slide, cx, chip_y, chip_w, chip_h)
+            chip = _glass_card(slide, cx, chip_y, chip_w, chip_h, alpha=76000)
 
-        CUR_Y += itin_h + 0.12
+            label = f"{nights}N {city}".strip()
+            _add_text(slide, label,
+                      cx + 0.05, chip_y + 0.07, chip_w - 0.1, 0.25,
+                      font_size=10, bold=True,
+                      color_hex=t["primary"], align=PP_ALIGN.CENTER)
 
-    # ── 6. HIGHLIGHTS (2-column grid) ─────────────────────────────────────────
-    highlights = content.get("highlights", [])
-    if highlights:
-        _add_text(slide, "HIGHLIGHTS & ATTRACTIONS",
-                  0.22, CUR_Y, W - 0.44, 0.26,
-                  font_size=8, bold=True, color_hex=t["muted"],
-                  align=PP_ALIGN.LEFT)
+            if hotel:
+                _add_text(slide, hotel[:32],
+                          cx + 0.05, chip_y + 0.31, chip_w - 0.1, 0.2,
+                          font_size=7.2, italic=True,
+                          color_hex=t["muted"], align=PP_ALIGN.CENTER)
+
+        CUR_Y += 0.8
+
+    # ========== PHOTO COLLAGE ==========
+    if len(photos) >= 2:
+        collage_h = 1.65
+        _add_text(slide, "DESTINATION VIBES",
+                  0.25, CUR_Y, W - 0.5, 0.25,
+                  font_size=10, bold=True,
+                  color_hex=t["muted"], align=PP_ALIGN.LEFT)
         CUR_Y += 0.3
 
-        n_hl   = min(len(highlights), 6)
-        col_w  = (W - 0.55) / 2
-        row_h  = 0.36
+        # left big
+        _add_picture(slide, photos[1], 0.25, CUR_Y, W*0.58, collage_h)
+
+        if len(photos) >= 3:
+            _add_picture(slide, photos[2], W*0.58 + 0.28, CUR_Y, W*0.42 - 0.53, collage_h/2)
+
+        if len(photos) >= 4:
+            _add_picture(slide, photos[3], W*0.58 + 0.28, CUR_Y + collage_h/2, W*0.42 - 0.53, collage_h/2)
+
+        CUR_Y += collage_h + 0.25
+
+    # ========== HIGHLIGHTS (GLASS GRID) ==========
+    highlights = content.get("highlights", [])
+    if highlights:
+        _add_text(slide, "HIGHLIGHTS & EXPERIENCES",
+                  0.25, CUR_Y, W - 0.5, 0.28,
+                  font_size=10, bold=True,
+                  color_hex=t["muted"], align=PP_ALIGN.LEFT)
+
+        CUR_Y += 0.32
+
+        col_w = (W - 0.55) / 2
+        row_h = 0.48
         for i, hl in enumerate(highlights[:6]):
             col = i % 2
             row = i // 2
-            bx  = 0.22 + col * (col_w + 0.11)
-            by  = CUR_Y + row * (row_h + 0.06)
+            bx  = 0.25 + col * (col_w + 0.08)
+            by  = CUR_Y + row * (row_h + 0.08)
 
-            bg = _add_rounded_rect(slide, bx, by, col_w, row_h, t["hl_bg"], radius_pt=5)
-            # Accent left bar
-            _add_rect(slide, bx, by, 0.06, row_h, t["accent"])
+            _shadow_card(slide, bx, by, col_w, row_h)
+            card = _glass_card(slide, bx, by, col_w, row_h, alpha=75000)
+
+            # accent bar
+            bar = _add_rect(slide, bx, by, 0.07, row_h, t["accent"])
+            _set_shape_alpha(bar, 90000)
+
             _add_text(slide, f"  ✦  {hl}",
-                      bx + 0.08, by + 0.04, col_w - 0.12, row_h - 0.06,
-                      font_size=9, bold=True, color_hex=t["text_on_light"],
-                      align=PP_ALIGN.LEFT, margin_left=0.02)
+                      bx + 0.08, by + 0.1, col_w - 0.12, row_h - 0.15,
+                      font_size=10, bold=True,
+                      color_hex=t["primary"], align=PP_ALIGN.LEFT)
 
-        n_rows  = math.ceil(n_hl / 2)
-        CUR_Y  += n_rows * (row_h + 0.06) + 0.1
+        CUR_Y += 1.7
 
-    # ── 7. PRICE CALLOUT (gold banner) ───────────────────────────────────────
-    price_h = 0.88
-    _add_rect(slide, 0, CUR_Y, W, price_h, t["price_bg"])
+    # ========== PRICE DEAL CARD ==========
+    deal_h = 1.35
+    _shadow_card(slide, 0.25, CUR_Y, W - 0.5, deal_h)
+    deal = _add_rounded_rect(slide, 0.25, CUR_Y, W - 0.5, deal_h, t["price_bg"])
 
-    # Decorative circles
-    _add_rounded_rect(slide, W - 1.1, CUR_Y - 0.2, 0.9, 0.9, t["accent2"], radius_pt=200)
-    _add_rounded_rect(slide, -0.25, CUR_Y + 0.2, 0.7, 0.7, "000000", radius_pt=200)
+    _add_text(slide, content.get("price_label", "SPECIAL OFFER"),
+              0.45, CUR_Y + 0.18, 2.8, 0.3,
+              font_size=11, bold=True,
+              color_hex="000000", align=PP_ALIGN.LEFT)
 
-    _add_text(slide, f"{content.get('price_label','SPECIAL OFFER')}:",
-              0.25, CUR_Y + 0.06, 2.2, 0.28,
-              font_size=9, bold=True, color_hex="000000",
-              align=PP_ALIGN.LEFT)
-    _add_text(slide, content.get("price","₹24,999"),
-              2.0, CUR_Y + 0.0, 3.5, 0.52,
-              font_size=32, bold=True, color_hex="000000",
-              align=PP_ALIGN.LEFT, font_name="Calibri")
-    _add_text(slide, content.get("price_note","per person twin sharing"),
-              0.25, CUR_Y + 0.52, W - 2.5, 0.24,
-              font_size=8.5, color_hex="333333", align=PP_ALIGN.LEFT)
-    _add_text(slide, content.get("validity","T&C Apply"),
-              0.25, CUR_Y + 0.72, W - 2.5, 0.16,
-              font_size=7.5, italic=True, color_hex="555555", align=PP_ALIGN.LEFT)
+    _add_text(slide, content.get("price", "₹24,999"),
+              0.45, CUR_Y + 0.45, 4.5, 0.6,
+              font_size=38, bold=True,
+              color_hex="000000", align=PP_ALIGN.LEFT,
+              font_name="Aptos Display")
 
-    # CTA button (right)
-    cta_btn = _add_rounded_rect(slide, W - 1.9, CUR_Y + 0.2, 1.62, 0.42,
-                                 t["dark"], radius_pt=10)
-    _add_text_in_shape(cta_btn, f"  {content.get('cta','BOOK NOW')}  →",
-                       font_size=10, bold=True, color_hex=t["accent2"],
-                       align=PP_ALIGN.CENTER)
+    _add_text(slide, content.get("price_note", ""),
+              0.45, CUR_Y + 1.05, W - 1.4, 0.25,
+              font_size=9, italic=True,
+              color_hex="333333", align=PP_ALIGN.LEFT)
 
-    CUR_Y += price_h + 0.12
+    # CTA button
+    cta_x = W - 2.35
+    cta_y = CUR_Y + 0.45
+    _shadow_card(slide, cta_x, cta_y, 1.85, 0.6)
+    cta_btn = _add_rounded_rect(slide, cta_x, cta_y, 1.85, 0.6, t["dark"])
+    _add_text_in_shape(cta_btn, f"{content.get('cta','BOOK NOW')} →",
+                       font_size=12, bold=True,
+                       color_hex=t["accent2"], align=PP_ALIGN.CENTER)
 
-    # ── 8. INCLUSIONS (on dark background) ───────────────────────────────────
+    CUR_Y += deal_h + 0.22
+
+    # ========== INCLUSIONS ==========
     inclusions = content.get("inclusions", [])
     if inclusions:
-        incl_row_h = 0.28
-        incl_n     = min(len(inclusions), 6)
-        incl_cols  = 2
-        incl_rows  = math.ceil(incl_n / incl_cols)
-        incl_h     = 0.26 + incl_rows * (incl_row_h + 0.04) + 0.1
-
+        incl_h = 1.4
         _add_rect(slide, 0, CUR_Y, W, incl_h, t["incl_bg"])
+        _set_shape_alpha(slide.shapes[-1], 95000)
+
         _add_text(slide, "WHAT'S INCLUDED",
-                  0.22, CUR_Y + 0.06, W - 0.44, 0.22,
-                  font_size=8, bold=True, color_hex=t["accent"],
-                  align=PP_ALIGN.LEFT)
+                  0.25, CUR_Y + 0.1, W - 0.5, 0.25,
+                  font_size=10, bold=True,
+                  color_hex=t["accent2"], align=PP_ALIGN.LEFT)
 
-        col_w  = (W - 0.5) / incl_cols
+        col_w = (W - 0.6) / 2
         for i, inc in enumerate(inclusions[:6]):
-            col = i % incl_cols
-            row = i // incl_cols
-            ix  = 0.22 + col * col_w
-            iy  = CUR_Y + 0.30 + row * (incl_row_h + 0.04)
+            col = i % 2
+            row = i // 2
+            ix = 0.25 + col * col_w
+            iy = CUR_Y + 0.4 + row * 0.3
+
             _add_text(slide, f"✓  {inc}",
-                      ix, iy, col_w - 0.1, incl_row_h,
-                      font_size=9, color_hex=t["text_on_dark"],
-                      align=PP_ALIGN.LEFT)
+                      ix, iy, col_w - 0.1, 0.28,
+                      font_size=9.5, bold=False,
+                      color_hex="ffffff", align=PP_ALIGN.LEFT)
 
-        CUR_Y += incl_h + 0.1
+        CUR_Y += incl_h + 0.15
 
-    # ── 9. SECOND PHOTO ROW (photos 2-3 side by side) ────────────────────────
-    if len(photos) >= 2:
-        n_side  = min(len(photos) - 1, 3)
-        photo_w = W / n_side
-        photo_h = 1.0
-        for i, ph in enumerate(photos[1:1+n_side]):
-            _add_picture(slide, ph, i * photo_w, CUR_Y, photo_w, photo_h)
-        CUR_Y += photo_h + 0.06
-
-    # ── 10. SERVICES (if services variant) ────────────────────────────────────
+    # ========== SERVICES VARIANT ==========
     if variant == "services":
         services = content.get("services", [])
         if services:
             _add_text(slide, "OUR SERVICES",
-                      0.22, CUR_Y, W - 0.44, 0.26,
-                      font_size=8, bold=True, color_hex=t["muted"],
-                      align=PP_ALIGN.LEFT)
-            CUR_Y += 0.3
-            svc_icons = ["✈️","🌍","🏨","🚂","📋","🛡️"]
-            n_svc  = min(len(services), 5)
-            svc_w  = (W - 0.5) / n_svc
+                      0.25, CUR_Y, W - 0.5, 0.28,
+                      font_size=10, bold=True,
+                      color_hex=t["muted"], align=PP_ALIGN.LEFT)
+            CUR_Y += 0.35
+
+            svc_icons = ["✈️", "🏨", "🚆", "📋", "🛡️", "🚌"]
+            n_svc = min(len(services), 5)
+            svc_w = (W - 0.55) / n_svc
+
             for i, svc in enumerate(services[:5]):
-                sx = 0.22 + i * svc_w
-                bg = _add_rounded_rect(slide, sx, CUR_Y, svc_w - 0.1, 0.8,
-                                       t["hl_bg"], radius_pt=6)
-                _add_rect(slide, sx, CUR_Y, svc_w - 0.1, 0.06, t["accent"])
+                sx = 0.25 + i * svc_w
+                _shadow_card(slide, sx, CUR_Y, svc_w - 0.1, 0.9)
+                card = _glass_card(slide, sx, CUR_Y, svc_w - 0.1, 0.9, alpha=78000)
+
                 _add_text(slide, svc_icons[i % len(svc_icons)],
-                          sx, CUR_Y + 0.08, svc_w - 0.1, 0.32,
-                          font_size=18, align=PP_ALIGN.CENTER, color_hex="000000")
+                          sx, CUR_Y + 0.1, svc_w - 0.1, 0.35,
+                          font_size=22, align=PP_ALIGN.CENTER,
+                          color_hex="000000")
                 _add_text(slide, svc,
-                          sx, CUR_Y + 0.42, svc_w - 0.1, 0.35,
-                          font_size=7.5, bold=True, color_hex=t["primary"],
-                          align=PP_ALIGN.CENTER)
-            CUR_Y += 0.9
+                          sx + 0.05, CUR_Y + 0.5, svc_w - 0.2, 0.3,
+                          font_size=8.2, bold=True,
+                          color_hex=t["primary"], align=PP_ALIGN.CENTER)
 
-    # ── 11. CERTIFICATIONS BAR ────────────────────────────────────────────────
-    cert_h = 0.6
+            CUR_Y += 1.05
+
+    # ========== CERT BAR ==========
+    cert_h = 0.62
     _add_rect(slide, 0, CUR_Y, W, cert_h, t["dark"])
-    _add_text(slide, "CERTIFICATIONS OF TRUST & ACTIVE MEMBERSHIPS",
-              0.22, CUR_Y + 0.05, W - 0.44, 0.2,
-              font_size=7, bold=True, color_hex=t["accent"],
-              align=PP_ALIGN.CENTER)
+    _add_text(slide, "CERTIFICATIONS & TRUSTED MEMBERSHIPS",
+              0.25, CUR_Y + 0.05, W - 0.5, 0.2,
+              font_size=8, bold=True,
+              color_hex=t["accent2"], align=PP_ALIGN.CENTER)
 
-    # Cert badge image (if provided)
-    cert_x = 0.22
+    cert_x = 0.35
     if cert_bytes:
-        _add_picture(slide, cert_bytes, cert_x, CUR_Y + 0.24, 0.36, 0.28)
-        cert_x += 0.44
+        _add_picture(slide, cert_bytes, cert_x, CUR_Y + 0.28, 0.35, 0.25)
+        cert_x += 0.42
 
-    # Cert name badges
-    badge_w = 0.72
-    badge_gap = 0.06
-    for i, cert in enumerate(CERT_NAMES[:8]):
-        bx = cert_x + i * (badge_w + badge_gap)
-        if bx + badge_w > W - 0.15: break
-        cb = _add_rounded_rect(slide, bx, CUR_Y + 0.26, badge_w, 0.24,
-                                t["primary2"], radius_pt=4)
-        _add_text_in_shape(cb, cert, font_size=6.5, bold=True,
-                           color_hex=t["text_on_dark"], align=PP_ALIGN.CENTER)
+    badge_w = 0.75
+    gap = 0.06
+    for i, nm in enumerate(CERT_NAMES):
+        bx = cert_x + i*(badge_w + gap)
+        if bx + badge_w > W - 0.2:
+            break
+        b = _add_rounded_rect(slide, bx, CUR_Y + 0.28, badge_w, 0.26, t["primary2"])
+        _add_text_in_shape(b, nm, font_size=7.2, bold=True,
+                           color_hex="ffffff", align=PP_ALIGN.CENTER)
 
     CUR_Y += cert_h
 
-    # ── 12. SOCIAL BAR ────────────────────────────────────────────────────────
-    soc_h = 0.4
+    # ========== SOCIAL STRIP ==========
+    soc_h = 0.42
     _add_rect(slide, 0, CUR_Y, W, soc_h, t["primary"])
-    soc_items = []
-    if content.get("social_fb"):  soc_items.append(f"📘 {content['social_fb']}")
-    if content.get("social_ig"):  soc_items.append(f"📸 {content['social_ig']}")
-    if content.get("social_yt"):  soc_items.append(f"▶️ {content['social_yt']}")
-    soc_line = "    •    ".join(soc_items) if soc_items else "Follow Us"
-    _add_text(slide, soc_line,
-              0.22, CUR_Y + 0.08, W - 0.44, 0.24,
-              font_size=8, color_hex=t["text_on_dark"],
-              align=PP_ALIGN.CENTER)
+    social = []
+    if content.get("social_fb"): social.append(f"📘 {content['social_fb']}")
+    if content.get("social_ig"): social.append(f"📸 {content['social_ig']}")
+    if content.get("social_yt"): social.append(f"▶️ {content['social_yt']}")
+    _add_text(slide, "   •   ".join(social) if social else "Follow Us",
+              0.25, CUR_Y + 0.1, W - 0.5, 0.25,
+              font_size=9, bold=True,
+              color_hex="ffffff", align=PP_ALIGN.CENTER)
     CUR_Y += soc_h
 
-    # ── 13. CONTACT + QR FOOTER ───────────────────────────────────────────────
-    footer_h = max(SLIDE_H - CUR_Y, 0.85)
+    # ========== FOOTER CONTACT ==========
+    footer_h = SLIDE_H - CUR_Y
     _add_rect(slide, 0, CUR_Y, W, footer_h, t["dark"])
 
-    # Contact info
-    _add_text(slide, "CONTACT INFO",
-              0.22, CUR_Y + 0.08, 3.5, 0.22,
-              font_size=7.5, bold=True, color_hex=t["accent"],
-              align=PP_ALIGN.LEFT)
-    contact_lines = []
-    if content.get("website"): contact_lines.append(f"🌐  {content['website']}")
-    if content.get("phone"):   contact_lines.append(f"📞  {content['phone']}")
-    if content.get("email"):   contact_lines.append(f"✉️  {content['email']}")
-    for i, line in enumerate(contact_lines):
+    _add_text(slide, "CONTACT & BOOKINGS",
+              0.25, CUR_Y + 0.1, 4.2, 0.25,
+              font_size=9, bold=True,
+              color_hex=t["accent2"], align=PP_ALIGN.LEFT)
+
+    lines = []
+    if content.get("website"): lines.append(f"🌐 {content['website']}")
+    if content.get("phone"):   lines.append(f"📞 {content['phone']}")
+    if content.get("email"):   lines.append(f"✉️ {content['email']}")
+
+    for i, line in enumerate(lines):
         _add_text(slide, line,
-                  0.22, CUR_Y + 0.30 + i * 0.19, 4.2, 0.2,
-                  font_size=8, color_hex=t["text_on_dark"],
+                  0.25, CUR_Y + 0.38 + i*0.22, 4.5, 0.22,
+                  font_size=9, color_hex="ffffff",
                   align=PP_ALIGN.LEFT)
 
-    # QR code (right side)
-    qr_data = _fetch_qr(content.get("website","www.yourtravels.com"), size=150)
+    # QR code right
+    qr_data = _fetch_qr(content.get("website", "www.yourtravels.com"), size=170)
     if qr_data:
-        _add_picture(slide, qr_data, W - 1.25, CUR_Y + 0.08, 1.0, 1.0)
+        _add_picture(slide, qr_data, W - 1.4, CUR_Y + 0.12, 1.15, 1.15)
         _add_text(slide, "SCAN TO BOOK",
-                  W - 1.35, CUR_Y + 0.08 + 1.02, 1.1, 0.2,
-                  font_size=6.5, bold=True, color_hex=t["accent"],
-                  align=PP_ALIGN.CENTER)
+                  W - 1.5, CUR_Y + 1.25, 1.35, 0.2,
+                  font_size=7, bold=True,
+                  color_hex=t["accent2"], align=PP_ALIGN.CENTER)
 
-    # Copyright footer line
-    _add_text(slide,
-              f"© 2025 {content.get('company_name','')} · Trusted | Compliant | Affordable",
-              0.22, SLIDE_H - 0.2, W - 0.44, 0.18,
-              font_size=6.5, color_hex=t["muted"], italic=True,
-              align=PP_ALIGN.CENTER)
+    # Border frame (premium)
+    frame = slide.shapes.add_shape(
+        MSO_AUTO_SHAPE_TYPE.RECTANGLE,
+        Inches(0.06), Inches(0.06),
+        Inches(W - 0.12), Inches(SLIDE_H - 0.12)
+    )
+    frame.fill.background()
+    frame.line.color.rgb = _rgb(t["accent"])
+    frame.line.width = Pt(2)
 
-    # ── SAVE ──────────────────────────────────────────────────────────────────
+    # Save
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
 
 
-# ── Story format (9:16 portrait — smaller) ────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# STORY FORMAT (9:16 INSTAGRAM REEL COVER STYLE)
+# ─────────────────────────────────────────────────────────────────────────────
+
 STORY_W = 5.4
 STORY_H = 9.6
+
 
 def build_story_pptx(
     content: dict,
@@ -724,105 +771,115 @@ def build_story_pptx(
     photos: list,
     logo_bytes: bytes | None,
 ) -> bytes:
-    """Build a 9:16 story/reel format PPTX."""
-    import math
-    t  = THEMES.get(theme_name, THEMES["🏅 Classic Navy Gold"])
+
+    t = THEMES.get(theme_name, THEMES["🏅 Classic Navy Gold"])
     prs = Presentation()
     prs.slide_width  = Inches(STORY_W)
     prs.slide_height = Inches(STORY_H)
+
     slide = prs.slides.add_slide(prs.slide_layouts[6])
     W = STORY_W
 
-    # White bg
+    # background
     _add_rect(slide, 0, 0, W, STORY_H, "ffffff")
 
-    # Full-bleed hero photo
+    # hero photo
     if photos:
-        _add_picture_bg(slide, photos[0], 0, 0, W, STORY_H * 0.55,
-                        Inches(W), Inches(STORY_H))
+        pic = _add_picture(slide, photos[0], 0, 0, W, STORY_H * 0.58)
+        if pic:
+            _send_to_back(slide, pic)
 
-    # Dark gradient on photo
-    _add_rect(slide, 0, STORY_H * 0.3, W, STORY_H * 0.25, t["dark"])
+    # overlays
+    ov = _add_rect(slide, 0, 0, W, STORY_H * 0.58, t["dark"])
+    _set_shape_alpha(ov, 25000)
 
-    # Logo top-left
+    ov2 = _add_rect(slide, 0, STORY_H * 0.38, W, STORY_H * 0.2, t["dark"])
+    _set_shape_alpha(ov2, 65000)
+
+    # logo
     if logo_bytes:
-        _add_picture(slide, logo_bytes, 0.18, 0.18, 1.2, 0.65)
+        _add_picture(slide, logo_bytes, 0.22, 0.18, 1.25, 0.62)
     else:
-        pill = _add_rounded_rect(slide, 0.18, 0.18, 1.2, 0.4, t["dark"], radius_pt=6)
-        _add_text_in_shape(pill, content.get("company_name","")[:22],
-                           font_size=8, bold=True, color_hex=t["accent"])
+        pill = _glass_card(slide, 0.22, 0.18, 1.35, 0.5, alpha=65000)
+        _add_text_in_shape(pill, "✈ TRAVEL", font_size=10, bold=True,
+                           color_hex=t["accent2"])
 
-    # Offer badge top-right
-    badge = _add_rounded_rect(slide, W - 1.55, 0.18, 1.35, 0.32, t["accent"], radius_pt=10)
-    _add_text_in_shape(badge, content.get("price_label","SPECIAL OFFER"),
-                       font_size=7, bold=True, color_hex="000000")
+    # offer badge
+    badge = _add_rounded_rect(slide, W - 1.65, 0.18, 1.4, 0.42, t["accent"])
+    _add_text_in_shape(badge, content.get("price_label","SPECIAL"),
+                       font_size=8, bold=True, color_hex="000000")
 
-    # Headline over photo
+    # headline
     _add_text(slide, content.get("headline",""),
-              0.2, STORY_H * 0.32, W - 0.4, 1.0,
-              font_size=22, bold=True, color_hex=t["text_on_dark"],
-              font_name="Calibri", align=PP_ALIGN.LEFT)
-    _add_text(slide, content.get("subheadline",""),
-              0.2, STORY_H * 0.32 + 1.0, W - 0.4, 0.28,
-              font_size=10, color_hex=t["accent"], align=PP_ALIGN.LEFT)
+              0.22, STORY_H * 0.33, W - 0.44, 0.9,
+              font_size=24, bold=True,
+              color_hex="ffffff", align=PP_ALIGN.LEFT,
+              font_name="Aptos Display")
 
-    # Content panel (dark, bottom half)
-    panel_y = STORY_H * 0.55
+    _add_text(slide, content.get("subheadline",""),
+              0.22, STORY_H * 0.43, W - 0.44, 0.3,
+              font_size=10, bold=False,
+              color_hex=t["accent2"], align=PP_ALIGN.LEFT)
+
+    # bottom panel
+    panel_y = STORY_H * 0.58
     _add_rect(slide, 0, panel_y, W, STORY_H - panel_y, t["primary"])
 
-    # Duration
-    _add_text(slide, content.get("duration",""),
-              0.22, panel_y + 0.12, W - 0.44, 0.26,
-              font_size=10, bold=True, color_hex=t["accent2"],
-              align=PP_ALIGN.CENTER)
+    # duration chip
+    chip = _glass_card(slide, 0.22, panel_y + 0.18, W - 0.44, 0.5, alpha=75000)
+    _add_text_in_shape(chip, f"⏱ {content.get('duration','')}",
+                       font_size=11, bold=True,
+                       color_hex=t["primary"], align=PP_ALIGN.CENTER)
 
-    # Highlights
-    CUR_Y = panel_y + 0.42
+    # highlights
+    CUR_Y = panel_y + 0.78
     for hl in content.get("highlights", [])[:5]:
-        _add_text(slide, f"  ✦  {hl}",
-                  0.22, CUR_Y, W - 0.44, 0.28,
-                  font_size=9.5, color_hex=t["text_on_dark"],
-                  align=PP_ALIGN.LEFT)
-        CUR_Y += 0.3
+        _add_text(slide, f"✦ {hl}",
+                  0.3, CUR_Y, W - 0.6, 0.25,
+                  font_size=10, bold=True,
+                  color_hex="ffffff", align=PP_ALIGN.LEFT)
+        CUR_Y += 0.28
 
-    # Price strip
-    CUR_Y += 0.08
-    _add_rect(slide, 0, CUR_Y, W, 0.72, t["price_bg"])
-    _add_text(slide, f"{content.get('price_label','')}:  {content.get('price','')}",
-              0.22, CUR_Y + 0.06, W - 0.44, 0.4,
-              font_size=20, bold=True, color_hex="000000",
-              align=PP_ALIGN.CENTER, font_name="Calibri")
+    # price strip
+    CUR_Y += 0.12
+    _shadow_card(slide, 0.22, CUR_Y, W - 0.44, 0.9)
+    strip = _add_rounded_rect(slide, 0.22, CUR_Y, W - 0.44, 0.9, t["price_bg"])
+    _add_text(slide, content.get("price",""),
+              0.25, CUR_Y + 0.15, W - 0.5, 0.5,
+              font_size=28, bold=True,
+              color_hex="000000", align=PP_ALIGN.CENTER,
+              font_name="Aptos Display")
+
     _add_text(slide, content.get("price_note",""),
-              0.22, CUR_Y + 0.48, W - 0.44, 0.2,
-              font_size=7.5, color_hex="333333", align=PP_ALIGN.CENTER)
-    CUR_Y += 0.76
+              0.25, CUR_Y + 0.62, W - 0.5, 0.25,
+              font_size=8, italic=True,
+              color_hex="333333", align=PP_ALIGN.CENTER)
+
+    CUR_Y += 1.05
 
     # CTA
-    cta_w = 2.2
-    cta_btn = _add_rounded_rect(slide, (W - cta_w) / 2, CUR_Y + 0.06,
-                                 cta_w, 0.42, t["dark"], radius_pt=10)
-    _add_text_in_shape(cta_btn, f"  {content.get('cta','BOOK NOW')}  ›",
-                       font_size=11, bold=True, color_hex=t["accent2"],
-                       align=PP_ALIGN.CENTER)
-    CUR_Y += 0.55
+    cta = _add_rounded_rect(slide, 0.85, CUR_Y, W - 1.7, 0.55, t["dark"])
+    _add_text_in_shape(cta, f"{content.get('cta','BOOK NOW')} →",
+                       font_size=12, bold=True,
+                       color_hex=t["accent2"])
 
-    # Contact footer
-    _add_text(slide,
-              f"🌐 {content.get('website','')}   📞 {content.get('phone','')}",
-              0.22, CUR_Y + 0.04, W - 0.44, 0.22,
-              font_size=8, color_hex=t["text_on_dark"], align=PP_ALIGN.CENTER)
+    CUR_Y += 0.7
+
+    # contact footer
+    _add_text(slide, f"🌐 {content.get('website','')}   📞 {content.get('phone','')}",
+              0.22, CUR_Y, W - 0.44, 0.25,
+              font_size=8.5, bold=True,
+              color_hex="ffffff", align=PP_ALIGN.CENTER)
+
     _add_text(slide, f"📸 {content.get('social_ig','')}   ▶️ {content.get('social_yt','')}",
-              0.22, CUR_Y + 0.26, W - 0.44, 0.2,
-              font_size=8, color_hex=t["accent"], align=PP_ALIGN.CENTER)
+              0.22, CUR_Y + 0.25, W - 0.44, 0.25,
+              font_size=8, bold=False,
+              color_hex=t["accent2"], align=PP_ALIGN.CENTER)
 
     buf = io.BytesIO()
     prs.save(buf)
     return buf.getvalue()
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# need math for ceiling
-import math
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE
@@ -956,7 +1013,6 @@ def render():
         key="main_photos",
     )
 
-    # Read bytes once
     if photos_input:
         names = [p.name for p in photos_input]
         if st.session_state.get("_photo_names") != names:
@@ -972,7 +1028,6 @@ def render():
 
     photos_raw: list = st.session_state.get("_photos_raw", [])
 
-    # Preview thumbnails
     if photos_raw:
         from PIL import Image as PILImage
         cols = st.columns(min(len(photos_raw), 6))
@@ -981,12 +1036,12 @@ def render():
                 img = PILImage.open(io.BytesIO(raw))
                 scale = 110 / img.width
                 thumb = img.resize((110, int(img.height * scale)), PILImage.LANCZOS)
-                buf = io.BytesIO(); thumb.save(buf, format="JPEG", quality=80)
+                buf = io.BytesIO()
+                thumb.save(buf, format="JPEG", quality=80)
                 cols[i].image(buf.getvalue(), use_container_width=True)
             except Exception:
                 cols[i].warning(f"Photo {i+1}")
 
-    # Generate button
     c1, c2 = st.columns([3,1])
     with c1:
         gen_btn = st.button("🚀 Generate AI Content",
@@ -997,7 +1052,6 @@ def render():
         elif not free_text.strip(): st.info("Type package ↑")
 
     if gen_btn and free_text.strip():
-        # Merge brand kit into prompt
         bk_extra = " ".join([
             f", company: {st.session_state.get('bk_company','')}" if st.session_state.get('bk_company') else "",
             f", phone: {st.session_state.get('bk_phone','')}" if st.session_state.get('bk_phone') else "",
@@ -1010,12 +1064,12 @@ def render():
         with st.spinner("🤖 AI generating complete flyer content…"):
             data = ai_generate_all(free_text + bk_extra, len(photos_raw))
 
-        # Override with explicit brand kit values
         for bk, dk in [("bk_company","company_name"),("bk_phone","phone"),
-                        ("bk_email","email"),("bk_website","website"),
-                        ("bk_fb","social_fb"),("bk_ig","social_ig"),("bk_yt","social_yt")]:
+                       ("bk_email","email"),("bk_website","website"),
+                       ("bk_fb","social_fb"),("bk_ig","social_ig"),("bk_yt","social_yt")]:
             v = st.session_state.get(bk,"")
-            if v: data[dk] = v
+            if v:
+                data[dk] = v
 
         st.session_state["ai_data"] = data
         st.success(f"✅  **{data.get('headline','')}**  ·  "
@@ -1024,7 +1078,6 @@ def render():
     ai = st.session_state.get("ai_data", {})
     st.markdown("---")
 
-    # ── TABS ──────────────────────────────────────────────────────────────────
     tab_flyer, tab_story, tab_copy, tab_bulk = st.tabs([
         "🖼️ Package Flyer (A4)",
         "📱 Story / Reel (9:16)",
@@ -1032,9 +1085,7 @@ def render():
         "📦 Bulk Download",
     ])
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 1 — PACKAGE FLYER
-    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 1
     with tab_flyer:
         if not ai:
             st.info("👆 Type your package description and click **Generate AI Content**.")
@@ -1084,7 +1135,7 @@ def render():
                 st.markdown("### 📥 Download")
 
                 if render_btn:
-                    with st.spinner("Building PPTX flyer…"):
+                    with st.spinner("Building Premium PPTX flyer…"):
                         try:
                             pptx_bytes = build_flyer_pptx(
                                 content=ai,
@@ -1103,7 +1154,7 @@ def render():
                 if pptx:
                     fname = st.session_state.get("flyer_name","flyer").replace(" ","_")
                     st.download_button(
-                        "📥 Download PPTX (Canva / PowerPoint)",
+                        "📥 Download Premium PPTX (Canva / PowerPoint)",
                         data=pptx,
                         file_name=f"{fname}_flyer.pptx",
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -1111,34 +1162,7 @@ def render():
                     )
                     st.success(f"✅ {len(pptx)//1024} KB PPTX ready!")
 
-                    st.markdown("""
-                    <div class="canva-tip">
-                    <b>📌 Steps to edit in Canva:</b><br>
-                    1. Download the PPTX above<br>
-                    2. Go to <a href="https://canva.com" target="_blank" style="color:#c9a84c;">canva.com</a>
-                       → <b>Create a design</b> → <b>Import file</b><br>
-                    3. Upload your .pptx file<br>
-                    4. Every element is now editable:<br>
-                    &nbsp;&nbsp;&nbsp;• Click any text → change font, size, color<br>
-                    &nbsp;&nbsp;&nbsp;• Click any shape → change color, size<br>
-                    &nbsp;&nbsp;&nbsp;• Click photos → swap with your own<br>
-                    5. Export as PNG, PDF, or JPG for social media
-                    </div>
-                    """, unsafe_allow_html=True)
-
-                    st.markdown("Also opens in **Microsoft PowerPoint** and **LibreOffice Impress** for editing.")
-                else:
-                    st.markdown("""
-                    <div style="border:1px dashed #334155;border-radius:10px;
-                                padding:50px 20px;text-align:center;color:#4b5563;">
-                        <div style="font-size:2.5rem;">📄</div>
-                        <div style="margin-top:8px;font-size:.85rem;">
-                        Click <b>Build PPTX Flyer</b> to generate</div>
-                    </div>""", unsafe_allow_html=True)
-
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 2 — STORY FORMAT
-    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 2
     with tab_story:
         if not ai:
             st.info("👆 Generate content first.")
@@ -1146,12 +1170,11 @@ def render():
             sl, sr = st.columns([1,1.2], gap="large")
             with sl:
                 st.markdown("### 📱 Story / Reel Format (9:16)")
-                st.caption("Instagram Story, WhatsApp Status, YouTube Shorts cover")
                 story_theme = st.selectbox("Theme", list(THEMES.keys()),
                     index=next((i for i,k in enumerate(THEMES)
                                 if ai.get("theme","").split()[-1] in k), 0),
                     key="st_theme")
-                story_btn = st.button("📱 Build Story PPTX",
+                story_btn = st.button("📱 Build Premium Story PPTX",
                                        type="primary", use_container_width=True)
 
             with sr:
@@ -1171,25 +1194,20 @@ def render():
                 if sp:
                     fname = ai.get("package_name","story").replace(" ","_")
                     st.download_button(
-                        "📥 Download Story PPTX",
+                        "📥 Download Premium Story PPTX",
                         data=sp,
                         file_name=f"{fname}_story.pptx",
                         mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                         use_container_width=True,
                     )
-                    st.success(f"✅ {len(sp)//1024} KB ready! Import to Canva and resize to 1080×1920.")
-                else:
-                    st.info("Click **Build Story PPTX** above.")
+                    st.success(f"✅ {len(sp)//1024} KB ready! Import to Canva and export 1080×1920.")
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 3 — SOCIAL CAPTIONS
-    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 3
     with tab_copy:
         if not ai:
             st.info("👆 Generate content first.")
         else:
-            st.markdown("### 📋 AI-Generated Copy  —  copy & paste for all platforms")
-            c1, c2 = st.columns(2)
+            st.markdown("### 📋 AI-Generated Copy")
             pairs = [
                 ("📸 Instagram Caption",  "instagram_caption"),
                 ("👥 Facebook Caption",   "facebook_caption"),
@@ -1199,24 +1217,20 @@ def render():
                 ("🎬 30-sec Reel Script", "reel_script"),
                 ("🔖 Hashtags",           "hashtags"),
             ]
-            for i,(label,key) in enumerate(pairs):
-                col = c1 if i%2==0 else c2
+            for label,key in pairs:
                 val = ai.get(key,"")
                 if val:
-                    with col:
-                        st.markdown(f"**{label}**")
-                        h = max(80, min(180, str(val).count("\n")*28+80))
-                        st.text_area("",value=val,height=h,
-                                     key=f"cp_{key}",label_visibility="collapsed")
+                    st.markdown(f"**{label}**")
+                    st.text_area("", value=val, height=120,
+                                 key=f"cp_{key}", label_visibility="collapsed")
 
-    # ═══════════════════════════════════════════════════════════════════════════
-    # TAB 4 — BULK DOWNLOAD
-    # ═══════════════════════════════════════════════════════════════════════════
+    # TAB 4
     with tab_bulk:
         if not ai:
             st.info("👆 Generate content first.")
         else:
             st.markdown("### 📦 Bulk — All Themes × All Formats in One ZIP")
+
             bl, br = st.columns([1,1])
             with bl:
                 bulk_themes  = st.multiselect("Themes", list(THEMES.keys()),
@@ -1229,7 +1243,6 @@ def render():
                                       disabled=not (bulk_themes and bulk_formats))
 
             with br:
-                st.markdown("### 📋 Results")
                 if bulk_btn and bulk_themes and bulk_formats:
                     zbuf = io.BytesIO()
                     total = len(bulk_themes) * len(bulk_formats)
@@ -1268,40 +1281,8 @@ def render():
                         mime="application/zip",
                         use_container_width=True,
                     )
-                else:
-                    st.markdown("""
-                    <div style="border:1px dashed #334155;border-radius:10px;
-                                padding:40px 20px;text-align:center;color:#4b5563;font-size:.85rem;">
-                        📦 Select themes + formats → Generate ZIP
-                    </div>""", unsafe_allow_html=True)
 
-    # ── TIPS ──────────────────────────────────────────────────────────────────
-    st.markdown("---")
-    with st.expander("💡 Tips — best results"):
-        st.markdown("""
-**Add to your `requirements.txt`:**
-```
-python-pptx>=0.6.21
-```
 
-**Perfect one-line prompt:**
-> *5 night 6 day Bhutan, 2 nights Thimphu Lhayuel Hotel, 1 night Punakha White Dragon,
-> 2 nights Paro Taktshang Lodge, Toyota, breakfast & dinner, guide & sightseeing,
-> Rs 28777 per person twin sharing, min 4 guests, valid Sep 2026,
-> 7 Wonders World Travels, 97112 81598, 7wwtravels.com*
-
-**Photo tips:**
-- Landscape/wide shots look best as hero backgrounds
-- Upload 3-4 photos: main landmark + 2 activity shots
-- JPG/PNG, minimum 1200px wide
-
-**Canva editing tips after import:**
-- Use **Canva's Background Remover** to clean your logo
-- Swap fonts to Canva's premium fonts (Playfair, Gilroy, etc.)
-- Use **Smart Mockup** to preview on phone/tablet
-- Export as 300 DPI PDF for print quality
-
-**API keys (both free):**
-- **Groq:** [console.groq.com](https://console.groq.com) — fast, generous daily limit
-- **Gemini:** [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) — 250 req/day
-        """)
+# if running directly
+if __name__ == "__main__":
+    render()
