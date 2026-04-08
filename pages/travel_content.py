@@ -1,20 +1,26 @@
 """
-✈ AI Travel Content Creator — Production Edition
-=================================================
-QUALITY UPGRADES vs previous version:
-  • 2× supersampling → LANCZOS downscale = antialiased text (no jagged edges)
-  • stroke_width on every text element = crisp legibility on any background
-  • Quadratic gradient overlay = lighter top, darker bottom (more natural)
-  • Correct font sizes that scale properly across all platforms
-  • Magazine/mosaic grid with 8px separator bars (visible at scale)
-  • Per-pixel grain replaced with Image.effect_noise (faster)
-  • All photo bytes read ONCE and cached — no BytesIO drain bugs
+✈ Professional Flyer Generator — 7 Wonders World Travels style
+================================================================
+Generates 3 flyer types matching the uploaded reference designs:
+  1. PACKAGE FLYER  — photo collage + itinerary + price box + hotel list
+  2. SERVICE FLYER  — colored pill service cards + features
+  3. PROMO FLYER    — large hero photo + bold headline + CTA
 
-FREE LLMs: Groq (console.groq.com) → Gemini (aistudio.google.com) fallback
+Design system extracted from reference flyers:
+  • Navy dark header + gold company name
+  • Gold accent bars top/bottom of sections
+  • Colored pill cards for services (blue/green/orange/purple/red)
+  • Gold price highlight box
+  • White service cards with navy border
+  • Social bar (white) + contact bar (navy) + cert bar (white)
+  • Certification logos: IATA · OTAI · ADTOI · NIMA · ETAA etc.
+
+AI: Groq (free) or Gemini (free 250 req/day) for copy generation
+Rendering: Pure Pillow with 2× supersampling → LANCZOS downscale
 """
 
 import streamlit as st
-import sys, os, io, json, re, zipfile, base64, time
+import sys, os, io, json, re, zipfile, base64
 from PIL import (Image, ImageDraw, ImageFont, ImageFilter,
                  ImageEnhance, ImageChops)
 
@@ -22,49 +28,47 @@ _ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT not in sys.path:
     sys.path.insert(0, _ROOT)
 
-# ── Supersampling constant ────────────────────────────────────────────────────
-# Render at SSAA× then downscale → free antialiasing on text + edges
-SSAA = 2
+# ─────────────────────────────────────────────────────────────────────────────
+# DESIGN SYSTEM  (extracted from 7WW reference flyers)
+# ─────────────────────────────────────────────────────────────────────────────
+NAVY      = (26, 42, 94)
+NAVY_MID  = (36, 51, 112)
+NAVY_LT   = (52, 73, 140)
+GOLD      = (201, 168, 76)
+GOLD_LT   = (245, 216, 120)
+GOLD_DK   = (139, 105, 20)
+WHITE     = (255, 255, 255)
+OFF_WHITE = (248, 246, 240)
+TEXT_DARK = (22, 22, 42)
+TEXT_MID  = (80, 80, 100)
 
-# ── Platforms ─────────────────────────────────────────────────────────────────
-PLATFORMS = {
-    "YouTube Thumbnail 16:9 (1280×720)":    (1280,  720),
-    "YouTube Shorts 9:16 (1080×1920)":      (1080, 1920),
-    "Instagram Post 1:1 (1080×1080)":       (1080, 1080),
-    "Instagram Story 9:16 (1080×1920)":     (1080, 1920),
-    "Facebook Post (1200×630)":             (1200,  630),
-    "WhatsApp Status 9:16 (1080×1920)":     (1080, 1920),
-    "Twitter/X 16:9 (1200×675)":            (1200,  675),
-    "LinkedIn Banner 4:1 (1584×396)":       (1584,  396),
-}
-
-# ── Themes ────────────────────────────────────────────────────────────────────
-THEMES = {
-    "Golden Hour":  {"accent":(255,190,40),  "dark":(18,8,2),   "light":(255,248,220), "grad":[(180,80,10),(30,12,2)],  "ov":(15,8,2)},
-    "Deep Ocean":   {"accent":(0,215,235),   "dark":(2,14,38),  "light":(220,248,255), "grad":[(0,55,120),(0,15,50)],   "ov":(2,12,35)},
-    "Dark Luxury":  {"accent":(215,178,58),  "dark":(6,5,10),   "light":(255,248,230), "grad":[(18,14,32),(5,4,10)],    "ov":(5,4,8)},
-    "Emerald":      {"accent":(70,230,110),  "dark":(4,22,12),  "light":(220,255,232), "grad":[(8,75,35),(3,22,10)],    "ov":(4,20,10)},
-    "Coral Sunset": {"accent":(255,120,80),  "dark":(35,8,4),   "light":(255,240,235), "grad":[(200,60,20),(65,15,5)],  "ov":(30,8,4)},
-    "Midnight Blue":{"accent":(100,148,255), "dark":(4,6,30),   "light":(225,235,255), "grad":[(8,15,65),(3,5,25)],     "ov":(3,5,28)},
-    "Rose Blush":   {"accent":(255,160,195), "dark":(30,6,18),  "light":(255,242,248), "grad":[(160,30,80),(55,8,28)],  "ov":(28,5,16)},
-    "Desert Sand":  {"accent":(255,185,60),  "dark":(45,25,5),  "light":(255,245,225), "grad":[(155,90,25),(55,32,8)],  "ov":(40,22,4)},
-}
-
-LAYOUTS = [
-    "Hero (1 photo)",
-    "Hero + Strip (2 photos)",
-    "Magazine Grid (3 photos)",
-    "Collage Mosaic (4-5 photos)",
-    "Side Panel (text left, photo right)",
-    "Cinematic (widescreen bars)",
-    "Luxury Centre (dark, centred)",
-    "Story Stack (3 photos vertical)",
+PILL_COLORS = [
+    (41,  128, 185),   # steel blue  — Tour Packages
+    (39,  174, 96),    # emerald     — Visa
+    (230, 126, 34),    # amber       — Hotel
+    (142, 68,  173),   # purple      — Rail
+    (192, 57,  43),    # crimson     — Flight
+    (22,  160, 133),   # teal        — extra
+    (52,  73,  94),    # dark slate  — extra
 ]
 
-# ── Font cache ────────────────────────────────────────────────────────────────
-_FC: dict = {}
+# Platform sizes
+PLATFORMS = {
+    "WhatsApp / Instagram Story 9:16 (900×1600)": (900, 1600),
+    "Instagram Post 1:1 (1080×1080)":             (1080, 1080),
+    "YouTube Thumbnail 16:9 (1280×720)":           (1280, 720),
+    "Facebook Post (1200×630)":                    (1200, 630),
+    "A4 Portrait PDF (2480×3508)":                 (2480, 3508),
+    "Square Flyer (1080×1080)":                    (1080, 1080),
+}
 
-def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
+SSAA = 2  # 2× supersampling for antialiased text
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FONT CACHE
+# ─────────────────────────────────────────────────────────────────────────────
+_FC: dict = {}
+def F(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     k = (size, bold)
     if k in _FC: return _FC[k]
     paths = [
@@ -82,23 +86,27 @@ def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
                 pass
     return ImageFont.load_default()
 
-# ── Key helpers ───────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# KEY HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 def _get(sk, sec, ev=""):
     v = st.session_state.get(sk, "").strip()
     if v: return v
     try:
-        v = str(st.secrets.get(sec, "")).strip()
+        v = str(st.secrets.get(sec,"")).strip()
         if v: return v
     except Exception:
         pass
-    return os.getenv(ev, "").strip()
+    return os.getenv(ev,"").strip()
 
 def _groq_key():   return _get("groq_key",   "GROQ_API_KEY",   "GROQ_API_KEY")
 def _gemini_key(): return _get("gemini_key", "GEMINI_API_KEY", "GEMINI_API_KEY")
 def _llm_ok():     return bool(_groq_key() or _gemini_key())
 
-# ── LLM ──────────────────────────────────────────────────────────────────────
-def _groq(system, user, tokens=1100):
+# ─────────────────────────────────────────────────────────────────────────────
+# LLM
+# ─────────────────────────────────────────────────────────────────────────────
+def _groq(system, user, tokens=900):
     key = _groq_key()
     if not key: return ""
     try:
@@ -106,7 +114,7 @@ def _groq(system, user, tokens=1100):
         r = Groq(api_key=key).chat.completions.create(
             model="llama-3.3-70b-versatile",
             messages=[{"role":"system","content":system},{"role":"user","content":user}],
-            max_tokens=tokens, temperature=0.75,
+            max_tokens=tokens, temperature=0.72,
             response_format={"type":"json_object"},
         )
         return r.choices[0].message.content.strip()
@@ -114,12 +122,12 @@ def _groq(system, user, tokens=1100):
         st.toast(f"Groq: {e}", icon="⚠️")
         return ""
 
-def _gemini(prompt, tokens=1100):
+def _gemini(combined, tokens=900):
     key = _gemini_key()
     if not key: return ""
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent"
-    body = {"contents":[{"parts":[{"text":prompt}]}],
-            "generationConfig":{"maxOutputTokens":tokens,"temperature":0.78,
+    body = {"contents":[{"parts":[{"text":combined}]}],
+            "generationConfig":{"maxOutputTokens":tokens,"temperature":0.75,
                                 "responseMimeType":"application/json"}}
     try:
         import requests as _req
@@ -130,7 +138,7 @@ def _gemini(prompt, tokens=1100):
         st.toast(f"Gemini: {e}", icon="⚠️")
         return ""
 
-def _parse_json(raw):
+def _parse(raw):
     try:
         clean = re.sub(r"```(?:json)?|```","",raw).strip()
         s = clean.find("{")
@@ -138,1070 +146,1055 @@ def _parse_json(raw):
     except Exception:
         return {}
 
-def ai_generate_all(free_text: str, n_photos: int) -> dict:
-    system = """You are an expert Indian travel marketing AI.
-From a short free-text description generate complete travel banner content.
-Return ONLY valid JSON with keys:
-  package_name (short e.g. "Golden Rajasthan 7D/6N"),
-  destination, headline (7-9 words with 1 emoji), subheadline (3 aspects with ·),
-  price (realistic INR), duration, cta (e.g. "Book Now →"),
-  highlights (array of 6, max 4 words each),
-  hashtags (10 hashtags as string),
-  instagram_caption (4 lines + hashtags),
-  facebook_caption (3 lines), whatsapp_status (2 lines emoji-rich),
-  youtube_title (SEO max 60 chars), youtube_desc (3 paragraphs),
-  reel_script (3 punchy sentences for 30-sec voiceover),
-  slide_captions (array of 8, max 5 words each for video),
-  theme (one of: Golden Hour/Deep Ocean/Dark Luxury/Emerald/Coral Sunset/Midnight Blue/Rose Blush/Desert Sand),
-  layout (one of: Hero (1 photo)/Hero + Strip (2 photos)/Magazine Grid (3 photos)/Collage Mosaic (4-5 photos)/Side Panel (text left, photo right)/Cinematic (widescreen bars)/Luxury Centre (dark, centred)/Story Stack (3 photos vertical)),
-  mood (one word)"""
-    user = f'Travel agent description: "{free_text}"\nPhotos uploaded: {n_photos}\nGenerate content:'
+def ai_content(prompt_text: str, flyer_type: str, brand: dict) -> dict:
+    system = f"""You are a professional Indian travel marketing copywriter.
+Generate flyer content for a "{flyer_type}" flyer for a travel agency.
+Return ONLY valid JSON. Keys depend on flyer type:
+
+For PACKAGE flyer:
+  headline (ALL CAPS, punchy, max 10 words),
+  subheadline (e.g. "5 Nights / 6 Days"),
+  destination, duration,
+  itinerary (array of objects: {{nights, city}} e.g. [{{"nights":"2 Nights","city":"Thimphu"}}]),
+  price (e.g. "Rs 28,777"), price_note (e.g. "per person twin sharing | Breakfast & Dinner"),
+  price_validity (e.g. "Valid till 30 Sep 2026"),
+  hotels (array of objects: {{city, options}} e.g. [{{"city":"Thimphu","options":"Lhayuel Hotel / similar"}}]),
+  highlights (array of 4-5 short strings),
+  tagline (1 short inspiring sentence),
+  hashtags (string of 8 hashtags)
+
+For SERVICE flyer:
+  headline (ALL CAPS, e.g. "YOUR GATEWAY TO THE WORLD"),
+  subheadline (e.g. "Tourist & Business Services for All Countries"),
+  services (array of 5 objects: {{icon, title, description}}),
+  cta (e.g. "Contact Us Today!"),
+  tagline, hashtags
+
+For PROMO flyer:
+  headline (ALL CAPS, very punchy),
+  subheadline, offer_text (e.g. "EXCLUSIVE DEAL"),
+  price, price_note, valid_till,
+  highlights (array of 4 short strings),
+  cta, tagline, hashtags
+"""
+    user = (f"Travel agency: {brand.get('name','7 Wonders World Travels')}\n"
+            f"Request: {prompt_text}\n"
+            f"Generate {flyer_type} flyer content:")
     raw = _groq(system, user) or _gemini(f"{system}\n\nReturn ONLY valid JSON.\n\n{user}")
-    data = _parse_json(raw) if raw else {}
-    defaults = {
-        "package_name":"Incredible India Package","destination":free_text.split()[0].title() if free_text else "India",
-        "headline":"✨ Discover the Magic of India","subheadline":"Culture · Adventure · Memories",
-        "price":"₹24,999/person","duration":"7 Days / 6 Nights","cta":"Book Now →",
-        "highlights":["Iconic Landmarks","Local Cuisine","Guided Tours","Comfortable Hotels","Airport Transfers","24/7 Support"],
-        "hashtags":"#Travel #India #TourPackage #Wanderlust #TravelIndia #Holiday #Explore #IncredibleIndia #Vacation #Tourism",
-        "instagram_caption":"✈️ Your dream trip awaits!\n📍 Incredible India\n💫 Book now and explore the magic!\n#Travel #India #Wanderlust",
-        "facebook_caption":"Planning your next holiday? We have the perfect package for you!\nExperience the best of India with our curated tour.\nContact us today to book your dream trip.",
-        "whatsapp_status":"✈️ Amazing India Package!\n📞 Call now to book!",
-        "youtube_title":"India Travel Package | Best Tour Deals 2025",
-        "youtube_desc":"Discover India with our amazing tour package.\n\nIncludes all major sights, comfortable hotels, and expert guides.\n\nBook now for the best prices!",
-        "reel_script":"India is calling! From golden deserts to lush backwaters, we cover it all. Book your dream holiday today and create memories that last a lifetime!",
-        "slide_captions":["Welcome! ✨","Explore Heritage 🏰","Desert Safari 🐪","Local Flavours 🍛","Natural Beauty 🌿","Sunset Views 🌅","Make Memories 📸","Book Now! →"],
-        "theme":"Golden Hour","layout":"Hero + Strip (2 photos)","mood":"adventurous",
-    }
-    for k,v in defaults.items():
-        data.setdefault(k,v)
-    # Validate layout matches available
-    if data["layout"] not in LAYOUTS:
-        data["layout"] = "Hero + Strip (2 photos)"
+    data = _parse(raw) if raw else {}
+
+    # Smart defaults based on prompt text
+    if flyer_type == "PACKAGE":
+        data.setdefault("headline", prompt_text.upper()[:50])
+        data.setdefault("subheadline","5 Nights / 6 Days")
+        data.setdefault("destination","Bhutan")
+        data.setdefault("duration","6 Days / 5 Nights")
+        data.setdefault("itinerary",[{"nights":"2 Nights","city":"Thimphu"},{"nights":"1 Night","city":"Punakha"},{"nights":"2 Nights","city":"Paro"}])
+        data.setdefault("price","Rs 28,777")
+        data.setdefault("price_note","per person twin sharing | Breakfast & Dinner | minimum 4 guests")
+        data.setdefault("price_validity","Valid till 30 Sep 2026")
+        data.setdefault("hotels",[{"city":"Thimphu","options":"Lhayuel Hotel / similar"},{"city":"Punakha","options":"White Dragon / similar"},{"city":"Paro","options":"Taktshang Village Lodge / similar"}])
+        data.setdefault("highlights",["Toyota vehicle","Guide & Sightseeing","Airport Transfers","All Taxes Included"])
+        data.setdefault("tagline","Your dream journey begins with a single step.")
+        data.setdefault("hashtags","#Bhutan #Travel #TourPackage #7WondersTravels #Wanderlust #Holiday")
+    elif flyer_type == "SERVICE":
+        data.setdefault("headline","YOUR GATEWAY TO THE WORLD")
+        data.setdefault("subheadline","Tourist & Business Visas for All Countries")
+        data.setdefault("services",[
+            {"icon":"🗺️","title":"Tour Packages","description":"Explore the World with Curated Tours"},
+            {"icon":"🛂","title":"Visa Assistance","description":"Hassle-Free Processing & Compliance"},
+            {"icon":"🏨","title":"Hotel Bookings","description":"Best Accommodation Rates Globally"},
+            {"icon":"🚂","title":"Euro Rail","description":"Seamless Europe Train Travel Bookings"},
+            {"icon":"✈️","title":"Flight Bookings","description":"Best Airfares Domestic & International"},
+        ])
+        data.setdefault("cta","Call Us Today!")
+        data.setdefault("tagline","Trusted | Compliant | Affordable")
+        data.setdefault("hashtags","#Travel #Visa #TourPackage #7WondersTravels #India")
+    else:  # PROMO
+        data.setdefault("headline","JOIN THE ADVENTURE!")
+        data.setdefault("subheadline","Contact Us for Exclusive Travel Deals & Tips!")
+        data.setdefault("offer_text","EXCLUSIVE DEAL")
+        data.setdefault("price","₹24,999")
+        data.setdefault("price_note","per person | All Inclusive")
+        data.setdefault("valid_till","Limited Period Offer")
+        data.setdefault("highlights",["Flights Included","Hotels Included","Sightseeing","24/7 Support"])
+        data.setdefault("cta","Book Now! Call +91 97112 81598")
+        data.setdefault("tagline","Your Ultimate Travel Partner Since 2015")
+        data.setdefault("hashtags","#Travel #Holiday #Explore #7WondersTravels")
     return data
 
-# ── Image helpers ─────────────────────────────────────────────────────────────
-def _cover(img: Image.Image, w: int, h: int) -> Image.Image:
-    img = img.convert("RGBA")
-    r = max(w/img.width, h/img.height)
-    nw, nh = int(img.width*r), int(img.height*r)
-    img = img.resize((nw,nh), Image.LANCZOS)
-    l,t = (nw-w)//2, (nh-h)//2
-    return img.crop((l,t,l+w,t+h))
+# ─────────────────────────────────────────────────────────────────────────────
+# DRAWING HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def rr(draw, box, r, fill=None, outline=None, width=2):
+    draw.rounded_rectangle(list(box), radius=r, fill=fill, outline=outline, width=width)
 
-def _enhance(img: Image.Image) -> Image.Image:
-    img = ImageEnhance.Brightness(img).enhance(1.06)
-    img = ImageEnhance.Contrast(img).enhance(1.12)
-    img = ImageEnhance.Color(img).enhance(1.18)
-    img = ImageEnhance.Sharpness(img).enhance(1.08)
-    return img
+def _tw(draw, xy, text, font, fill, sw=0, sf=(0,0,0)):
+    if sw:
+        draw.text(xy, text, font=font, fill=fill, stroke_width=sw, stroke_fill=sf)
+    else:
+        draw.text(xy, text, font=font, fill=fill)
 
-def _vignette(img: Image.Image, strength: float = 0.55) -> Image.Image:
-    w, h = img.size
-    mask = Image.new("L",(w,h),255)
-    draw = ImageDraw.Draw(mask)
-    cx,cy = w//2,h//2
-    for i in range(60):
-        t = i/60
-        a = int(255*strength*t*t)
-        rx,ry = int(cx*(1-t*0.9)), int(cy*(1-t*0.9))
-        draw.ellipse([cx-rx,cy-ry,cx+rx,cy+ry], fill=255-a)
-    dark = Image.new("RGBA",(w,h),(0,0,0,210))
-    out  = img.convert("RGBA").copy()
-    out.paste(dark, mask=ImageChops.invert(mask))
-    return out
+def cx_text(draw, text, font, y, W, fill, sw=0, sf=(0,0,0)):
+    bb = draw.textbbox((0,0),text,font=font)
+    tw = bb[2]-bb[0]; th = bb[3]-bb[1]
+    x = max(0,(W-tw)//2)
+    _tw(draw,(x,y),text,font,fill,sw,sf)
+    return th
 
-def _gradient_overlay(img: Image.Image, ov_rgb: tuple, dark_rgb: tuple,
-                       a_top: int = 40, a_bot: int = 195) -> Image.Image:
-    """Quadratic gradient — lighter on top, heavier at bottom."""
-    w,h = img.size
-    rows = []
-    for y in range(h):
-        t = (y/h)**1.5   # quadratic: more transparent on top
-        a = int(a_top + (a_bot-a_top)*t)
-        r = int(ov_rgb[0]*(1-t) + dark_rgb[0]*t)
-        g = int(ov_rgb[1]*(1-t) + dark_rgb[1]*t)
-        b = int(ov_rgb[2]*(1-t) + dark_rgb[2]*t)
-        rows.append(bytes([r,g,b,a]*w))
-    ov = Image.frombytes("RGBA",(w,h),b"".join(rows))
-    return Image.alpha_composite(img.convert("RGBA"), ov)
-
-def _flat_overlay(img: Image.Image, rgb: tuple, alpha: int) -> Image.Image:
-    ov = Image.new("RGBA", img.size, rgb+(alpha,))
-    return Image.alpha_composite(img.convert("RGBA"), ov)
-
-def _noise(img: Image.Image, amount: int = 12) -> Image.Image:
-    """Add subtle grain using faster method."""
-    import random as _r
-    grain = Image.new("L", img.size, 128)
-    px = grain.load()
-    w,h = img.size
-    for y in range(0,h,2):
-        for x in range(0,w,2):
-            v = max(0, min(255, 128+_r.randint(-amount,amount)))
-            px[x,y] = v
-    grain = grain.filter(ImageFilter.GaussianBlur(0.5))
-    grain_rgba = Image.merge("RGBA",[grain,grain,grain,Image.new("L",img.size,10)])
-    return Image.alpha_composite(img.convert("RGBA"), grain_rgba)
-
-# ── Text helpers (all use stroke_width for legibility) ────────────────────────
-def _tw(draw, xy, text, font, fill, sw=2, sf=(0,0,0,190)):
-    """Text with stroke (antialiasing via supersampling + stroke)."""
-    draw.text(xy, text, font=font, fill=fill, stroke_width=sw, stroke_fill=sf)
-
-def _mw(draw, xy, text, font, fill, spacing=10, sw=2, sf=(0,0,0,190)):
-    draw.multiline_text(xy, text, font=font, fill=fill, spacing=spacing,
-                        stroke_width=sw, stroke_fill=sf)
-
-def _wrap_text(text, font, max_w, draw):
-    words = text.split(); lines=[]; line=""
-    for word in words:
-        test = (line+" "+word).strip()
-        if draw.textbbox((0,0),test,font=font)[2] <= max_w: line=test
+def wrap_text(text, font, max_w, draw):
+    words=text.split(); lines=[]; line=""
+    for w in words:
+        test=(line+" "+w).strip()
+        if draw.textbbox((0,0),test,font=font)[2]<=max_w: line=test
         else:
             if line: lines.append(line)
-            line=word
+            line=w
     if line: lines.append(line)
     return "\n".join(lines)
 
-def _pill(draw, x, y, text, font, bg, fg, px=18, py=9):
-    bb = draw.textbbox((0,0),text,font=font)
-    tw,th = bb[2]-bb[0], bb[3]-bb[1]
-    r = (th+py)//2
-    draw.rounded_rectangle([x,y,x+tw+px*2,y+th+py*2], radius=r, fill=bg)
-    draw.text((x+px,y+py), text, font=font, fill=fg)
-    return x+tw+px*2+8
+def cover_crop(img: Image.Image, w, h) -> Image.Image:
+    img=img.convert("RGB")
+    r=max(w/img.width, h/img.height)
+    nw,nh=int(img.width*r),int(img.height*r)
+    img=img.resize((nw,nh),Image.LANCZOS)
+    l,t=(nw-w)//2,(nh-h)//2
+    return img.crop((l,t,l+w,t+h))
 
-def _social_bar(draw, w, h, fb, insta, web, accent, font):
-    bh = max(52, int(h*0.048))
-    by = h-bh
-    rows = []
-    for y in range(bh):
-        a = int(200*(y/bh)**0.7)
-        rows.append(bytes([0,0,0,a]*w))
-    bar = Image.frombytes("RGBA",(w,bh),b"".join(rows))
-    # paste onto canvas at by
-    # We return the bar image and y-offset for compositing
-    items = [i for i in [f"f  {fb}" if fb else "",
-                          f"@  {insta}" if insta else "",
-                          f"  {web}" if web else ""] if i]
-    if not items: return None, by
-    line = "   ·   ".join(items)
-    return bar, by, line, accent, font
+def _enhance(img):
+    img=ImageEnhance.Brightness(img).enhance(1.04)
+    img=ImageEnhance.Contrast(img).enhance(1.08)
+    img=ImageEnhance.Color(img).enhance(1.12)
+    return img
 
-def _paste_logo(canvas, logo_bytes, pos, max_px, bot=66):
-    if not logo_bytes: return canvas
-    logo = Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
-    r = min(max_px/logo.width, max_px/logo.height)
-    nw,nh = int(logo.width*r), int(logo.height*r)
-    logo = logo.resize((nw,nh), Image.LANCZOS)
-    W,H = canvas.size; m=22
-    pm = {"Top Left":(m,m),"Top Right":(W-nw-m,m),
-          "Bottom Left":(m,H-nh-m-bot),"Bottom Right":(W-nw-m,H-nh-m-bot)}
-    x,y = pm.get(pos,(W-nw-m,m))
-    sh = Image.new("RGBA",(nw+10,nh+10),(0,0,0,0))
-    ImageDraw.Draw(sh).rectangle([5,5,nw+5,nh+5],fill=(0,0,0,80))
-    sh = sh.filter(ImageFilter.GaussianBlur(5))
-    canvas.paste(sh,(x-3,y+3),sh)
-    canvas.paste(logo,(x,y),logo)
-    return canvas
-
-def _paste_cert(canvas, cert_bytes, max_px=88, bot=66):
-    if not cert_bytes: return canvas
-    badge = Image.open(io.BytesIO(cert_bytes)).convert("RGBA")
-    r = min(max_px/badge.width, max_px/badge.height)
-    nw,nh = int(badge.width*r),int(badge.height*r)
-    badge = badge.resize((nw,nh),Image.LANCZOS)
-    W,H = canvas.size
-    canvas.paste(badge,(22,H-nh-22-bot),badge)
-    return canvas
-
-# ── Multi-photo canvas builders ───────────────────────────────────────────────
-def _build_canvas(photos: list, w: int, h: int, layout: str, theme: dict) -> Image.Image:
-    gap = 8  # visible separator at scale
-
-    if not photos:
-        # Gradient-only background
-        c1,c2 = theme["grad"]
-        rows = []
-        for y in range(h):
-            t = y/h
-            rows.append(bytes([int(c1[0]+(c2[0]-c1[0])*t),
-                                int(c1[1]+(c2[1]-c1[1])*t),
-                                int(c1[2]+(c2[2]-c1[2])*t),255]*w))
-        return Image.frombytes("RGBA",(w,h),b"".join(rows))
-
-    p = photos  # shorthand
-
-    if "Hero (" in layout or len(p)==1:
-        return _cover(p[0],w,h)
-
-    elif "Hero + Strip" in layout:
-        top_h = int(h*0.65); bot_h = h-top_h-gap
-        c = Image.new("RGBA",(w,h),(0,0,0,255))
-        c.paste(_cover(p[0],w,top_h).convert("RGBA"),(0,0))
-        c.paste(_cover(p[1] if len(p)>1 else p[0],w,bot_h).convert("RGBA"),(0,top_h+gap))
-        ImageDraw.Draw(c).rectangle([0,top_h,w,top_h+gap],(0,0,0,220))
-        return c
-
-    elif "Magazine Grid" in layout:
-        lw = int(w*0.60); rw = w-lw-gap; rh = (h-gap)//2
-        c = Image.new("RGBA",(w,h),(0,0,0,255))
-        c.paste(_cover(p[0],lw,h).convert("RGBA"),(0,0))
-        c.paste(_cover(p[1] if len(p)>1 else p[0],rw,rh).convert("RGBA"),(lw+gap,0))
-        c.paste(_cover(p[2] if len(p)>2 else p[0],rw,rh).convert("RGBA"),(lw+gap,rh+gap))
-        d=ImageDraw.Draw(c)
-        d.rectangle([lw,0,lw+gap,h],(0,0,0,230))
-        d.rectangle([lw+gap,rh,w,rh+gap],(0,0,0,230))
-        return c
-
-    elif "Collage Mosaic" in layout:
-        n = min(len(p),5)
-        c = Image.new("RGBA",(w,h),(0,0,0,255))
-        if n<=2:
-            pw=(w-gap)//2
-            for i in range(min(n,2)):
-                c.paste(_cover(p[i],pw,h).convert("RGBA"),(i*(pw+gap),0))
-        elif n==3:
-            lw=int(w*0.58); rw=w-lw-gap; rh=(h-gap)//2
-            c.paste(_cover(p[0],lw,h).convert("RGBA"),(0,0))
-            c.paste(_cover(p[1],rw,rh).convert("RGBA"),(lw+gap,0))
-            c.paste(_cover(p[2],rw,rh).convert("RGBA"),(lw+gap,rh+gap))
-        elif n==4:
-            lw=int(w*0.55); rw=w-lw-gap; rh=(h-gap)//2; bw=(rw-gap)//2
-            c.paste(_cover(p[0],lw,h).convert("RGBA"),(0,0))
-            c.paste(_cover(p[1],rw,rh).convert("RGBA"),(lw+gap,0))
-            c.paste(_cover(p[2],bw,rh).convert("RGBA"),(lw+gap,rh+gap))
-            c.paste(_cover(p[3],bw,rh).convert("RGBA"),(lw+gap+bw+gap,rh+gap))
-        else:
-            tw=(w-gap*2)//3; th=(h-gap)//2; bw=(w-gap*2)//3
-            c.paste(_cover(p[0],tw*2+gap,th).convert("RGBA"),(0,0))
-            c.paste(_cover(p[1],tw,th).convert("RGBA"),(tw*2+gap*2,0))
-            for i in range(3):
-                pi = p[2+i] if (2+i)<len(p) else p[0]
-                c.paste(_cover(pi,bw,th).convert("RGBA"),(i*(bw+gap),th+gap))
-        return c
-
-    elif "Story Stack" in layout:
-        n=min(len(p),3); ph=(h-gap*(n-1))//n
-        c=Image.new("RGBA",(w,h),(0,0,0,255))
-        for i in range(n):
-            c.paste(_cover(p[i] if i<len(p) else p[0],w,ph).convert("RGBA"),(0,i*(ph+gap)))
-        return c
-
-    elif "Side Panel" in layout:
-        pw=int(w*0.55); px_off=w-pw
-        c=Image.new("RGBA",(w,h),(0,0,0,255))
-        c.paste(_cover(p[0],pw,h).convert("RGBA"),(px_off,0))
-        c1,c2=theme["grad"]
-        rows=[]
-        for y in range(h):
-            t=y/h
-            rows.append(bytes([int(c1[0]+(c2[0]-c1[0])*t),
-                                int(c1[1]+(c2[1]-c1[1])*t),
-                                int(c1[2]+(c2[2]-c1[2])*t),255]*(px_off+60)))
-        panel=Image.frombytes("RGBA",(px_off+60,h),b"".join(rows))
-        c.alpha_composite(panel,(0,0))
-        return c
-
+def gradient_rect(draw, x1, y1, x2, y2, c1, c2, axis="v"):
+    """Fill a rectangle with a gradient."""
+    if axis=="v":
+        for y in range(y1,y2):
+            t=(y-y1)/(y2-y1)
+            r=int(c1[0]+(c2[0]-c1[0])*t)
+            g=int(c1[1]+(c2[1]-c1[1])*t)
+            b=int(c1[2]+(c2[2]-c1[2])*t)
+            draw.line([(x1,y),(x2,y)],fill=(r,g,b))
     else:
-        # Default: hero
-        return _cover(p[0],w,h)
+        for x in range(x1,x2):
+            t=(x-x1)/(x2-x1)
+            r=int(c1[0]+(c2[0]-c1[0])*t)
+            g=int(c1[1]+(c2[1]-c1[1])*t)
+            b=int(c1[2]+(c2[2]-c1[2])*t)
+            draw.line([(x,y1),(x,y2)],fill=(r,g,b))
 
-# ── Layout text renderers ─────────────────────────────────────────────────────
-def _render_text(draw, canvas, w, h, sc, theme, content, fonts, show_p, show_cta, layout):
-    fT,fS,fH,fP,fC,fSm = fonts
-    a=theme["accent"]; d=theme["dark"]; lt=theme["light"]
-    a4=a+(255,); lt4=lt+(255,)
+def load_img_bytes(b):
+    img=Image.open(io.BytesIO(bytes(b))).convert("RGB")
+    return _enhance(img)
 
-    if "Cinematic" in layout:
-        _render_cinematic(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta)
-        return
-    if "Luxury Centre" in layout:
-        _render_luxury(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta)
-        return
-    if "Side Panel" in layout:
-        _render_side_text(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta)
-        return
+# ─────────────────────────────────────────────────────────────────────────────
+# COMMON SECTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+def draw_header(canvas, draw, W, brand, sc):
+    """Navy header with gold company name. Returns bottom y."""
+    hh = int(190*sc)
+    # Navy background
+    draw.rectangle([0,0,W,hh],fill=NAVY)
+    # Top gold bar
+    draw.rectangle([0,0,W,int(6*sc)],fill=GOLD)
+    # Logo placeholder (circle with "7")
+    lc=(W//2, int(70*sc)); lr=int(42*sc)
+    draw.ellipse([lc[0]-lr,lc[1]-lr,lc[0]+lr,lc[1]+lr],fill=GOLD,outline=GOLD_LT,width=int(2*sc))
+    draw.ellipse([lc[0]-lr+int(4*sc),lc[1]-lr+int(4*sc),
+                  lc[0]+lr-int(4*sc),lc[1]+lr-int(4*sc)],fill=NAVY)
+    f7=F(int(44*sc),bold=True)
+    cx_text(draw,"7",f7,lc[1]-int(26*sc),W,GOLD)
 
-    # Default: left-aligned text overlay (hero / strip / magazine / mosaic / story)
-    margin = int(55*sc); mw = w-margin*2; cy = int(52*sc)
-
-    pkg = content.get("package_name","")
-    if pkg:
-        _pill(draw,margin,cy,f"  ✈  {pkg.upper()}  ",fSm,a+(210,),d+(255,),px=16,py=8)
-        cy += int(54*sc)
-        draw.rectangle([margin,cy,margin+int(80*sc),cy+4],fill=a4)
-        cy += int(20*sc)
-
-    hl = content.get("headline","")
-    if hl:
-        wrapped = _wrap_text(hl,fT,mw,draw)
-        _mw(draw,(margin,cy),wrapped,fT,lt4,spacing=10,sw=3,sf=(0,0,0,200))
-        bb = draw.multiline_textbbox((margin,cy),wrapped,font=fT)
-        cy += bb[3]-bb[1]+int(14*sc)
-
-    sub = content.get("subheadline","")
-    if sub:
-        wrapped = _wrap_text(sub,fS,mw,draw)
-        _mw(draw,(margin,cy),wrapped,fS,a4,spacing=8,sw=2,sf=(0,0,0,160))
-        bb = draw.multiline_textbbox((margin,cy),wrapped,font=fS)
-        cy += bb[3]-bb[1]+int(24*sc)
-
-    for item in content.get("highlights",[])[:5]:
-        line = f"  ✓  {item}"
-        _tw(draw,(margin,cy),line,fH,lt4,sw=1,sf=(0,0,0,140))
-        bb = draw.textbbox((margin,cy),line,font=fH)
-        cy += bb[3]-bb[1]+int(8*sc)
-    if content.get("highlights"): cy += int(14*sc)
-
-    if show_p and content.get("price"):
-        _tw(draw,(margin,cy),f"From  {content['price']}",fP,a4,sw=2,sf=(0,0,0,180))
-        bb = draw.textbbox((margin,cy),f"From  {content['price']}",font=fP)
-        cy += bb[3]-bb[1]+int(20*sc)
-
-    if show_cta and content.get("cta"):
-        _pill(draw,margin,cy,f"  {content['cta']}  ",fC,a+(228,),d+(255,),px=22,py=12)
-
-
-def _render_cinematic(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta):
-    fT,fS,fH,fP,fC,fSm = fonts
-    a=theme["accent"]; d=theme["dark"]; lt=theme["light"]
-    a4=a+(255,); lt4=lt+(255,)
-    bar=int(h*0.15)
-
-    # Top/bottom bars
-    for y in range(bar):
-        a_val=int(230*(1-y/bar)**1.2)
-        draw.line([(0,y),(w,y)],fill=(*d,a_val))
-    for y in range(h-bar,h):
-        a_val=int(230*((y-(h-bar))/bar)**1.2)
-        draw.line([(0,y),(w,y)],fill=(*d,a_val))
-    draw.rectangle([0,bar,w,bar+4],fill=a4)
-    draw.rectangle([0,h-bar-4,w,h-bar],fill=a4)
-
-    pkg=content.get("package_name","")
-    if pkg:
-        bb=draw.textbbox((0,0),pkg.upper(),font=fSm)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,(bar-(bb[3]-bb[1]))//2),pkg.upper(),fSm,a4,sw=1,sf=(0,0,0,150))
-
-    # Mid dark panel + centred headline
-    mid_h=int(h*0.30); mid_y=bar+(h-2*bar-mid_h)//2
-    ov=Image.new("RGBA",(w,h),(0,0,0,0))
-    ImageDraw.Draw(ov).rectangle([0,mid_y,w,mid_y+mid_h],fill=(*d,155))
-    canvas.alpha_composite(ov)
-    draw=ImageDraw.Draw(canvas)
-
-    hl=content.get("headline","")
-    if hl:
-        wrapped=_wrap_text(hl,fT,w-int(80*sc),draw)
-        bb=draw.multiline_textbbox((0,0),wrapped,font=fT)
-        tx=(w-(bb[2]-bb[0]))//2; ty=mid_y+(mid_h-(bb[3]-bb[1]))//2
-        _mw(draw,(tx,ty),wrapped,fT,lt4,spacing=10,sw=3,sf=(0,0,0,200))
-
-    cy=h-bar+int(10*sc)
-    parts=[]
-    if content.get("subheadline"): parts.append(content["subheadline"])
-    if show_p and content.get("price"): parts.append(f"From {content['price']}")
-    if show_cta and content.get("cta"): parts.append(content["cta"])
-    line=" | ".join(parts)
-    if line:
-        bb=draw.textbbox((0,0),line,font=fSm)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,cy),line,fSm,a4,sw=1,sf=(0,0,0,140))
-
-
-def _render_luxury(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta):
-    fT,fS,fH,fP,fC,fSm = fonts
-    a=theme["accent"]; d=(6,5,10); lt=theme["light"]
-    a4=a+(255,); lt4=lt+(255,)
-    margin=int(62*sc); mw=w-margin*2
-
-    ov=Image.new("RGBA",(w,h),(*d,195))
-    canvas.alpha_composite(ov)
-    draw=ImageDraw.Draw(canvas)
-
-    # Corner brackets
-    bd=int(20*sc); seg=int(min(w,h)*0.09); lw=max(2,int(min(w,h)*0.003))
-    for (cx2,cy2),(d1,d2,d3,d4) in [
-        ((bd,bd),(1,0,0,1)),((w-bd,bd),(-1,0,0,1)),
-        ((bd,h-bd),(1,0,0,-1)),((w-bd,h-bd),(-1,0,0,-1))]:
-        draw.line([(cx2,cy2),(cx2+d1*seg,cy2+d2*seg)],fill=a4,width=lw)
-        draw.line([(cx2,cy2),(cx2+d3*seg,cy2+d4*seg)],fill=a4,width=lw)
-
-    cy=int(80*sc)
-    # Ornament
-    cx3=w//2
-    draw.line([(cx3-70,cy),(cx3-14,cy)],fill=a+(180,),width=1)
-    draw.line([(cx3+14,cy),(cx3+70,cy)],fill=a+(180,),width=1)
-    draw.ellipse([(cx3-6,cy-5),(cx3+6,cy+5)],fill=a+(210,))
-    cy+=int(28*sc)
-
-    pkg=content.get("package_name","")
-    if pkg:
-        bb=draw.textbbox((0,0),pkg.upper(),font=fSm)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,cy),pkg.upper(),fSm,a+(190,),sw=1)
-        cy+=int(44*sc)
-
-    hl=content.get("headline","")
-    if hl:
-        wrapped=_wrap_text(hl,fT,mw,draw)
-        bb=draw.multiline_textbbox((0,0),wrapped,font=fT)
-        tx=(w-(bb[2]-bb[0]))//2
-        _mw(draw,(tx,cy),wrapped,fT,lt4,spacing=10,sw=3,sf=(0,0,0,200))
-        bb2=draw.multiline_textbbox((tx,cy),wrapped,font=fT)
-        cy+=bb2[3]-bb2[1]+int(18*sc)
-
-    draw.line([(margin*2,cy),(w-margin*2,cy)],fill=a+(140,),width=1)
-    cy+=int(22*sc)
-
-    sub=content.get("subheadline","")
-    if sub:
-        bb=draw.textbbox((0,0),sub,font=fS)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,cy),sub,fS,a+(195,),sw=1)
-        cy+=(bb[3]-bb[1])+int(28*sc)
-
-    for item in content.get("highlights",[])[:4]:
-        bb=draw.textbbox((0,0),f"◆  {item}",font=fH)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,cy),f"◆  {item}",fH,lt+(180,),sw=1)
-        cy+=(bb[3]-bb[1])+int(10*sc)
-
-    if content.get("highlights"): cy+=int(14*sc)
-    if show_p and content.get("price"):
-        pt=f"FROM  {content['price']}"
-        bb=draw.textbbox((0,0),pt,font=fP)
-        _tw(draw,((w-(bb[2]-bb[0]))//2,cy),pt,fP,a4,sw=2,sf=(0,0,0,180))
-        cy+=(bb[3]-bb[1])+int(18*sc)
-    if show_cta and content.get("cta"):
-        bb=draw.textbbox((0,0),f"  {content['cta']}  ",font=fC)
-        tx=(w-(bb[2]-bb[0]+44))//2
-        _pill(draw,tx,cy,f"  {content['cta']}  ",fC,a+(215,),d+(255,),px=22,py=12)
-
-
-def _render_side_text(draw,canvas,w,h,sc,theme,content,fonts,show_p,show_cta):
-    fT,fS,fH,fP,fC,fSm = fonts
-    a=theme["accent"]; lt=theme["light"]
-    a4=a+(255,); lt4=lt+(255,)
-    panel_w=int(w*0.45); margin=int(48*sc); mw=panel_w-margin; cy=int(55*sc)
-
-    pkg=content.get("package_name","")
-    if pkg:
-        draw.rectangle([margin,cy,margin+int(8*sc),cy+int(34*sc)],fill=a4)
-        _tw(draw,(margin+int(18*sc),cy+int(4*sc)),pkg.upper(),fSm,a4,sw=1)
-        cy+=int(52*sc)
-
-    hl=content.get("headline","")
-    if hl:
-        words=hl.split()
-        for i in range(0,len(words),3):
-            line=" ".join(words[i:i+3])
-            col=a4 if i>0 else lt4
-            _tw(draw,(margin,cy),line,fT,col,sw=3,sf=(0,0,0,200))
-            bb=draw.textbbox((margin,cy),line,font=fT)
-            cy+=bb[3]-bb[1]
-        cy+=int(10*sc)
-
-    draw.rectangle([margin,cy,margin+int(180*sc),cy+int(6*sc)],fill=a4)
-    cy+=int(26*sc)
-
-    sub=content.get("subheadline","")
-    if sub:
-        wrapped=_wrap_text(sub,fS,mw,draw)
-        _mw(draw,(margin,cy),wrapped,fS,lt4,sw=1)
-        bb=draw.multiline_textbbox((margin,cy),wrapped,font=fS)
-        cy+=bb[3]-bb[1]+int(20*sc)
-
-    for item in content.get("highlights",[])[:4]:
-        _tw(draw,(margin,cy),f"✓  {item}",fH,lt4,sw=1)
-        bb=draw.textbbox((margin,cy),f"✓  {item}",font=fH)
-        cy+=bb[3]-bb[1]+int(8*sc)
-    if content.get("highlights"): cy+=int(12*sc)
-
-    if show_p and content.get("price"):
-        _tw(draw,(margin,cy),f"From {content['price']}",fP,a4,sw=2,sf=(0,0,0,180))
-        bb=draw.textbbox((margin,cy),f"From {content['price']}",font=fP)
-        cy+=bb[3]-bb[1]+int(18*sc)
-    if show_cta and content.get("cta"):
-        _pill(draw,margin,cy,f"  {content['cta']}  ",fC,a+(228,),theme["dark"]+(255,),px=20,py=11)
-
-# ── Master compose (2× supersampling) ────────────────────────────────────────
-def compose(
-    photo_bytes_list: list,   # list of bytes
-    W: int, H: int,
-    theme_name: str,
-    layout_name: str,
-    content: dict,
-    logo_bytes: bytes | None,
-    logo_pos: str,
-    cert_bytes: bytes | None,
-    fb: str, insta: str, web: str,
-    show_price: bool = True,
-    show_cta: bool = True,
-    enhance: bool = True,
-    slide_caption: str = "",
-    slide_num: str = "",
-) -> Image.Image:
-
-    theme = THEMES.get(theme_name, THEMES["Golden Hour"])
-
-    # 1. Load + validate photos
-    photos = []
-    for b in photo_bytes_list:
+    # If logo image provided, overlay it
+    logo_bytes=st.session_state.get("brand_logo")
+    if logo_bytes:
         try:
-            img = Image.open(io.BytesIO(bytes(b))).convert("RGB")
-            if enhance:
-                img = _enhance(img)
-            photos.append(img)
+            logo=Image.open(io.BytesIO(logo_bytes)).convert("RGBA")
+            max_w=int(160*sc); max_h=int(100*sc)
+            r_logo=min(max_w/logo.width, max_h/logo.height)
+            nw,nh=int(logo.width*r_logo),int(logo.height*r_logo)
+            logo=logo.resize((nw,nh),Image.LANCZOS)
+            canvas.paste(logo,((W-nw)//2,int(10*sc)),logo)
         except Exception:
             pass
 
-    # 2. Work at 2× resolution
-    w, h = W*SSAA, H*SSAA
-    sc = min(w, h) / 1080
+    # Company name
+    name=brand.get("name","7 WONDERS WORLD")
+    parts=name.upper().split()
+    line1=" ".join(parts[:3]) if len(parts)>=3 else name.upper()
+    line2=" ".join(parts[3:6]) if len(parts)>3 else ""
+    line3=brand.get("suffix","TRAVELS PVT LTD")
+    line4=brand.get("since","SINCE 2015")
 
-    # 3. Build photo canvas at 2×
-    canvas = _build_canvas(photos, w, h, layout_name, theme)
-    canvas = canvas.convert("RGBA")
+    fN1=F(int(28*sc),bold=True)
+    fN2=F(int(22*sc),bold=True)
+    fN3=F(int(18*sc))
+    fSince=F(int(15*sc))
 
-    # 4. Visual effects
-    canvas = _vignette(canvas, 0.55)
+    y0=int(120*sc)
+    cx_text(draw,line1,fN1,y0,W,GOLD)
+    if line2:
+        y0+=int(32*sc)
+        cx_text(draw,line2,fN2,y0,W,GOLD)
+    y0+=int(30*sc)
+    cx_text(draw,line3,fN2,y0,W,WHITE)
+    y0+=int(26*sc)
+    cx_text(draw,line4,fSince,y0,W,GOLD_LT)
 
-    if "Luxury Centre" in layout_name:
-        canvas = _flat_overlay(canvas, theme["ov"], 195)
-    elif "Side Panel" in layout_name:
-        canvas = _gradient_overlay(canvas, theme["ov"], theme["dark"], 30, 140)
+    # Bottom gold line
+    draw.rectangle([0,hh-int(4*sc),W,hh],fill=GOLD)
+    return hh
+
+
+def draw_footer(canvas, draw, W, H, brand, sc):
+    """Social bar + contact bar + cert bar + copyright. Returns top y."""
+    # Cert bar (bottom 100px)
+    cert_y=H-int(100*sc)
+    draw.rectangle([0,cert_y,W,H],fill=WHITE)
+    draw.rectangle([0,cert_y,W,cert_y+int(3*sc)],fill=GOLD)
+    fCertTitle=F(int(15*sc))
+    cx_text(draw,"— Certification of Trust & Active Membership —",fCertTitle,
+            cert_y+int(8*sc),W,(120,120,120))
+    certs=brand.get("certs",["IATA","OTAI","ADTOI","NIMA","ETAA"])
+    fCert=F(int(13*sc),bold=True)
+    total_cert_w=sum(draw.textbbox((0,0),c,font=fCert)[2]+int(22*sc) for c in certs)
+    cx2=(W-total_cert_w)//2+10
+    for c in certs:
+        bb=draw.textbbox((0,0),c,font=fCert)
+        cw=bb[2]-bb[0]+int(16*sc); ch=bb[3]-bb[1]+int(10*sc)
+        rr(draw,[cx2,cert_y+int(32*sc),cx2+cw,cert_y+int(32*sc)+ch],6,outline=NAVY,width=2)
+        draw.text((cx2+int(8*sc),cert_y+int(37*sc)),c,font=fCert,fill=NAVY)
+        cx2+=cw+int(6*sc)
+
+    # Copyright line
+    draw.rectangle([0,H-int(26*sc),W,H],fill=NAVY)
+    fCopy=F(int(13*sc))
+    cx_text(draw,f"© 2025 {brand.get('name','7 Wonders World Travels')}. All Rights Reserved.",
+            fCopy,H-int(22*sc),W,(200,200,200))
+
+    # Contact bar
+    contact_y=cert_y-int(85*sc)
+    draw.rectangle([0,contact_y,W,cert_y],fill=NAVY_MID)
+    fCt=F(int(20*sc))
+    fCtB=F(int(20*sc),bold=True)
+    web=brand.get("website","www.7wwtravels.com")
+    phone=brand.get("phone","+91 97112 81598")
+    email1=brand.get("email1","vidhi@7wwtravels.com")
+    email2=brand.get("email2","anand@7wwtravels.com")
+    cx_text(draw,f"{web}  |  {phone}",fCtB,contact_y+int(12*sc),W,WHITE)
+    cx_text(draw,f"{email1}  |  {email2}",fCt,contact_y+int(44*sc),W,GOLD_LT)
+
+    # Social bar
+    social_y=contact_y-int(80*sc)
+    draw.rectangle([0,social_y,W,contact_y],fill=OFF_WHITE)
+    draw.rectangle([0,social_y,W,social_y+int(3*sc)],fill=NAVY)
+    fSocTitle=F(int(22*sc),bold=True)
+    fSoc=F(int(18*sc))
+    cx_text(draw,"FOLLOW US",fSocTitle,social_y+int(8*sc),W,NAVY)
+    fb=brand.get("facebook","7wwtravels")
+    ig=brand.get("instagram","7ww_travels")
+    yt=brand.get("youtube","@7wwtravels")
+    li=brand.get("linkedin","7wwtravels/")
+    soc_line=f"f  {fb}   ·   @  {ig}   ·   ▶  {yt}   ·   in  {li}"
+    cx_text(draw,soc_line,fSoc,social_y+int(42*sc),W,NAVY)
+    return social_y
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLYER TYPE 1: PACKAGE  (like Bhutan flyer)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_package(photos, W, H, content, brand, qr_bytes=None):
+    sc=min(W,H)/900
+    W2,H2=W*SSAA,H*SSAA
+    sc2=min(W2,H2)/900
+
+    canvas=Image.new("RGB",(W2,H2),OFF_WHITE)
+    draw=ImageDraw.Draw(canvas)
+
+    # Header
+    hdr_bot=draw_header(canvas,draw,W2,brand,sc2)
+    footer_top=draw_footer(canvas,draw,W2,H2,brand,sc2)
+    content_h=footer_top-hdr_bot
+    cy=hdr_bot
+
+    # ── HEADLINE BAND ──────────────────────────────────────────────────────────
+    hl_h=int(155*sc2)
+    gradient_rect(draw,0,cy,W2,cy+hl_h,NAVY,NAVY_MID)
+    draw.rectangle([0,cy,W2,cy+int(5*sc2)],fill=GOLD)
+    fHL=F(int(46*sc2),bold=True)
+    fSub=F(int(26*sc2))
+    hl=content.get("headline","YOUR BHUTAN ADVENTURE AWAITS")
+    wrapped_hl=wrap_text(hl,fHL,W2-int(60*sc2),draw)
+    lines=wrapped_hl.split("\n")
+    y_hl=cy+int(14*sc2)
+    for line in lines:
+        cx_text(draw,line,fHL,y_hl,W2,GOLD,sw=2,sf=GOLD_DK)
+        bb=draw.textbbox((0,0),line,font=fHL)
+        y_hl+=bb[3]-bb[1]+int(6*sc2)
+    cx_text(draw,content.get("subheadline","5 Nights / 6 Days"),fSub,y_hl,W2,WHITE)
+    cy+=hl_h
+
+    # ── PHOTO MOSAIC + ITINERARY ───────────────────────────────────────────────
+    mid_h=int(380*sc2)
+    gap=int(6*sc2)
+    left_w=int(W2*0.46)
+    right_w=W2-left_w-gap
+
+    # Photo left side
+    if len(photos)>=3:
+        ph=(mid_h-gap*2)//3
+        for i in range(3):
+            tile=cover_crop(photos[i],left_w,ph)
+            canvas.paste(tile,(0,cy+i*(ph+gap)))
+    elif len(photos)==2:
+        ph=(mid_h-gap)//2
+        for i in range(2):
+            tile=cover_crop(photos[i],left_w,ph)
+            canvas.paste(tile,(0,cy+i*(ph+gap)))
+    elif len(photos)==1:
+        tile=cover_crop(photos[0],left_w,mid_h)
+        canvas.paste(tile,(0,cy))
     else:
-        canvas = _gradient_overlay(canvas, theme["ov"], theme["dark"], 40, 195)
+        # Gradient placeholder
+        gradient_rect(draw,0,cy,left_w,cy+mid_h,NAVY_MID,NAVY)
 
-    canvas = _noise(canvas, 12)
-    canvas = canvas.convert("RGBA")
+    # Right side: light background + itinerary
+    draw.rectangle([left_w+gap,cy,W2,cy+mid_h],fill=WHITE)
+    rx=left_w+gap+int(20*sc2); ry=cy+int(20*sc2)
 
-    draw = ImageDraw.Draw(canvas)
+    # Duration badge
+    fDur=F(int(32*sc2),bold=True)
+    fDurSub=F(int(20*sc2))
+    _tw(draw,(rx,ry),content.get("duration","5 Nights / 6 Days"),fDur,NAVY,sw=1,sf=NAVY_LT)
+    ry+=int(44*sc2)
 
-    # 5. Fonts at 2× scale
-    fT  = _font(int(74*sc), bold=True)
-    fS  = _font(int(40*sc))
-    fH  = _font(int(30*sc))
-    fP  = _font(int(58*sc), bold=True)
-    fC  = _font(int(36*sc), bold=True)
-    fSm = _font(int(23*sc))
-    fonts = (fT,fS,fH,fP,fC,fSm)
+    # Itinerary dots
+    itinerary=content.get("itinerary",[])
+    fItin=F(int(22*sc2),bold=True)
+    fItinSub=F(int(18*sc2))
+    dot_x=rx+int(15*sc2)
+    for item in itinerary:
+        # connector line
+        draw.rectangle([dot_x+int(8*sc2),ry+int(12*sc2),
+                         dot_x+int(12*sc2),ry+int(52*sc2)],fill=GOLD)
+        draw.ellipse([dot_x,ry+int(4*sc2),dot_x+int(20*sc2),ry+int(24*sc2)],
+                      fill=GOLD,outline=GOLD_DK,width=int(2*sc2))
+        _tw(draw,(dot_x+int(28*sc2),ry),item.get("nights",""),fItin,NAVY)
+        _tw(draw,(dot_x+int(28*sc2),ry+int(26*sc2)),item.get("city",""),fItinSub,TEXT_MID)
+        ry+=int(64*sc2)
 
-    # 6. Slide caption mode (for video frames)
-    if slide_caption:
-        a=theme["accent"]; lt=theme["light"]
-        fSl=_font(int(56*sc),bold=True)
-        mw=w-int(80*sc)
-        if slide_num:
-            nb=draw.textbbox((0,0),slide_num,font=fSm)
-            _tw(draw,(w-int(50*sc)-(nb[2]-nb[0]),int(30*sc)),slide_num,fSm,a+(195,),sw=1)
-        wrapped=_wrap_text(slide_caption,fSl,mw,draw)
-        bb=draw.multiline_textbbox((0,0),wrapped,font=fSl)
-        tx=(w-(bb[2]-bb[0]))//2; ty=(h-(bb[3]-bb[1]))//2-int(28*sc)
-        pad=int(24*sc)
-        draw.rounded_rectangle([tx-pad,ty-pad,tx+(bb[2]-bb[0])+pad,ty+(bb[3]-bb[1])+pad],
-                                 radius=int(16*sc),fill=(0,0,0,120))
-        _mw(draw,(tx,ty),wrapped,fSl,lt+(255,),spacing=10,sw=3,sf=(0,0,0,210))
+    cy+=mid_h+gap
 
-        pkg=content.get("package_name","")
-        if pkg:
-            pb=draw.textbbox((0,0),pkg,font=fSm)
-            px_=(w-(pb[2]-pb[0])-36)//2
-            _pill(draw,px_,h-int(115*sc),pkg,fSm,a+(210,),(8,8,8,255),px=18,py=8)
-        if content.get("price") and show_price:
-            pt=f"From {content['price']}"
-            pb=draw.textbbox((0,0),pt,font=fP)
-            _tw(draw,((w-(pb[2]-pb[0]))//2,h-int(190*sc)),pt,fP,a+(255,),sw=2,sf=(0,0,0,180))
+    # ── PRICE BOX ─────────────────────────────────────────────────────────────
+    price_h=int(130*sc2)
+    draw.rectangle([0,cy,W2,cy+price_h],fill=GOLD_LT)
+    draw.rectangle([0,cy,W2,cy+int(4*sc2)],fill=GOLD_DK)
+    draw.rectangle([0,cy+price_h-int(4*sc2),W2,cy+price_h],fill=GOLD_DK)
+
+    fOffer=F(int(22*sc2),bold=True)
+    fPrice=F(int(46*sc2),bold=True)
+    fPNote=F(int(19*sc2))
+    fValid=F(int(16*sc2))
+
+    cx_text(draw,"SPECIAL OFFER:",fOffer,cy+int(8*sc2),W2,NAVY)
+    bb=draw.textbbox((0,0),"SPECIAL OFFER:",font=fOffer)
+    offer_w=bb[2]-bb[0]
+    pr_text=content.get("price","Rs 28,777")
+    # Price centered below
+    cx_text(draw,pr_text,fPrice,cy+int(34*sc2),W2,NAVY,sw=1,sf=GOLD_DK)
+    cx_text(draw,content.get("price_note","per person twin sharing | Breakfast & Dinner"),
+            fPNote,cy+int(88*sc2),W2,TEXT_DARK)
+    cx_text(draw,content.get("price_validity","T&C Apply"),
+            fValid,cy+int(112*sc2),W2,TEXT_MID)
+    cy+=price_h+int(16*sc2)
+
+    # ── HOTEL LIST ─────────────────────────────────────────────────────────────
+    hotel_h=int(170*sc2)
+    draw.rectangle([int(16*sc2),cy,W2-int(16*sc2),cy+hotel_h],fill=WHITE)
+    rr(draw,[int(16*sc2),cy,W2-int(16*sc2),cy+hotel_h],
+       int(10*sc2),outline=NAVY,width=int(2*sc2))
+    fHotelTitle=F(int(22*sc2),bold=True)
+    fHotel=F(int(19*sc2))
+    _tw(draw,(int(36*sc2),cy+int(12*sc2)),"Standard Accommodation:",fHotelTitle,NAVY)
+    hotel_y=cy+int(44*sc2)
+    for h in content.get("hotels",[]):
+        city=h.get("city","")
+        opts=h.get("options","")
+        _tw(draw,(int(36*sc2),hotel_y),f"• {city} – {opts}",fHotel,TEXT_DARK)
+        hotel_y+=int(34*sc2)
+    cy+=hotel_h+int(12*sc2)
+
+    # ── HIGHLIGHTS STRIP ──────────────────────────────────────────────────────
+    hls=content.get("highlights",[])
+    if hls:
+        strip_h=int(60*sc2)
+        gradient_rect(draw,0,cy,W2,cy+strip_h,NAVY,NAVY_MID)
+        fHl=F(int(19*sc2))
+        hl_text="   ✓  ".join(hls[:5])
+        cx_text(draw,"✓  "+hl_text,fHl,cy+int(16*sc2),W2,GOLD_LT)
+        cy+=strip_h+int(10*sc2)
+
+    # ── QR + CONTACT inline ────────────────────────────────────────────────────
+    if qr_bytes:
+        try:
+            qr=Image.open(io.BytesIO(qr_bytes)).convert("RGB")
+            qr_size=int(100*sc2)
+            qr=qr.resize((qr_size,qr_size),Image.LANCZOS)
+            qr_x=int(20*sc2)
+            qr_y=cy+int(8*sc2)
+            canvas.paste(qr,(qr_x,qr_y))
+            fQr=F(int(17*sc2),bold=True)
+            _tw(draw,(qr_x+qr_size+int(16*sc2),qr_y+int(10*sc2)),"SCAN TO BOOK",fQr,NAVY)
+            fQrSub=F(int(15*sc2))
+            _tw(draw,(qr_x+qr_size+int(16*sc2),qr_y+int(36*sc2)),
+                brand.get("website","www.7wwtravels.com"),fQrSub,TEXT_MID)
+        except Exception:
+            pass
+
+    return canvas.convert("RGB").resize((W,H),Image.LANCZOS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLYER TYPE 2: SERVICE  (like Visa / Services flyer)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_service(photos, W, H, content, brand):
+    sc=min(W,H)/900
+    W2,H2=W*SSAA,H*SSAA
+    sc2=min(W2,H2)/900
+
+    canvas=Image.new("RGB",(W2,H2),OFF_WHITE)
+    draw=ImageDraw.Draw(canvas)
+
+    hdr_bot=draw_header(canvas,draw,W2,brand,sc2)
+    footer_top=draw_footer(canvas,draw,W2,H2,brand,sc2)
+    cy=hdr_bot
+
+    # ── HEADLINE BAND ──────────────────────────────────────────────────────────
+    hl_h=int(200*sc2)
+    gradient_rect(draw,0,cy,W2,cy+hl_h,NAVY,NAVY_MID)
+    draw.rectangle([0,cy,W2,cy+int(5*sc2)],fill=GOLD)
+    fHL=F(int(58*sc2),bold=True)
+    fSub=F(int(28*sc2))
+    hl=content.get("headline","YOUR GATEWAY TO THE WORLD")
+    lines=wrap_text(hl,fHL,W2-int(80*sc2),draw).split("\n")
+    y_hl=cy+int(18*sc2)
+    for line in lines:
+        cx_text(draw,line,fHL,y_hl,W2,GOLD,sw=2,sf=GOLD_DK)
+        bb=draw.textbbox((0,0),line,font=fHL)
+        y_hl+=bb[3]-bb[1]+int(8*sc2)
+    cx_text(draw,content.get("subheadline","Expert Travel Services"),fSub,y_hl,W2,WHITE)
+    cy+=hl_h
+
+    # ── HERO PHOTO (if provided) ───────────────────────────────────────────────
+    if photos:
+        hero_h=int(230*sc2)
+        hero=cover_crop(photos[0],W2,hero_h)
+        # Slight darken for overlay
+        overlay=Image.new("RGBA",(W2,hero_h),(NAVY[0],NAVY[1],NAVY[2],80))
+        hero_rgba=hero.convert("RGBA")
+        hero_rgba.alpha_composite(overlay)
+        canvas.paste(hero_rgba.convert("RGB"),(0,cy))
+
+        # World landmarks style silhouette text
+        fLandmark=F(int(19*sc2))
+        cx_text(draw,"🗼 Paris  ·  🏛️ Rome  ·  🗽 New York  ·  🕌 Dubai  ·  🏯 Bhutan",
+                fLandmark,cy+hero_h-int(38*sc2),W2,WHITE)
+        cy+=hero_h+int(12*sc2)
     else:
-        _render_text(draw, canvas, w, h, sc, theme, content, fonts, show_price, show_cta, layout_name)
+        cy+=int(10*sc2)
 
-    # 7. Social bar
-    result = _social_bar(draw, w, h, fb, insta, web, theme["accent"], fSm)
-    if result and len(result)==5:
-        bar_img, by, line, accent, font = result
-        canvas.paste(bar_img, (0,by), bar_img)
-        draw = ImageDraw.Draw(canvas)
-        bb=draw.textbbox((0,0),line,font=font)
-        tw=bb[2]-bb[0]; th=bb[3]-bb[1]
-        bh=bar_img.height
-        _tw(draw,((w-tw)//2, by+(bh-th)//2),line,font,accent+(255,),sw=1,sf=(0,0,0,120))
+    # ── SERVICE PILLS ─────────────────────────────────────────────────────────
+    services=content.get("services",[])
+    pill_h=int(88*sc2)
+    fSvcTitle=F(int(28*sc2),bold=True)
+    fSvcDesc=F(int(21*sc2))
+    for i,svc in enumerate(services[:6]):
+        col=PILL_COLORS[i%len(PILL_COLORS)]
+        col_lt=tuple(min(255,c+40) for c in col)
+        col_dk=tuple(max(0,c-40) for c in col)
+        py=cy+i*(pill_h+int(10*sc2))
+        mx=int(16*sc2)
+        # Pill with gradient
+        gradient_rect(draw,mx,py,W2-mx,py+pill_h,col,col_dk)
+        rr(draw,[mx,py,W2-mx,py+pill_h],int(14*sc2),outline=col_lt,width=int(2*sc2))
+        # Left circle icon
+        cx_icon=mx+int(50*sc2); cy_icon=py+pill_h//2
+        draw.ellipse([cx_icon-int(32*sc2),cy_icon-int(32*sc2),
+                       cx_icon+int(32*sc2),cy_icon+int(32*sc2)],
+                      fill=col_lt,outline=WHITE,width=int(2*sc2))
+        icon=svc.get("icon","✈️")
+        fIcon=F(int(28*sc2))
+        bb=draw.textbbox((0,0),icon,font=fIcon)
+        draw.text((cx_icon-(bb[2]-bb[0])//2, cy_icon-(bb[3]-bb[1])//2),
+                  icon,font=fIcon,fill=WHITE)
+        # Text
+        tx=mx+int(100*sc2)
+        _tw(draw,(tx,py+int(12*sc2)),svc.get("title","Service"),fSvcTitle,WHITE,sw=1,sf=col_dk)
+        _tw(draw,(tx,py+int(50*sc2)),svc.get("description",""),fSvcDesc,(240,240,240))
 
-    # 8. Logo + cert (at 2× positions, will downscale nicely)
-    canvas = _paste_logo(canvas, logo_bytes, logo_pos, int(128*sc), bot=int(66*sc))
-    canvas = _paste_cert(canvas, cert_bytes, int(86*sc), bot=int(66*sc))
+        # Right icon (mirrored)
+        cx_r=W2-mx-int(50*sc2)
+        draw.ellipse([cx_r-int(28*sc2),cy_icon-int(28*sc2),
+                       cx_r+int(28*sc2),cy_icon+int(28*sc2)],
+                      fill=col_lt,outline=WHITE,width=int(2*sc2))
 
-    # 9. Downscale to target resolution → free LANCZOS antialiasing
-    final = canvas.convert("RGB").resize((W, H), Image.LANCZOS)
-    return final
+    cy+=len(services[:6])*(pill_h+int(10*sc2))+int(16*sc2)
 
-def to_bytes(img: Image.Image, fmt="PNG", quality=95) -> bytes:
-    buf = io.BytesIO()
-    if fmt=="JPEG": img=img.convert("RGB")
-    img.save(buf, format=fmt, quality=quality)
+    # ── CTA BAND ──────────────────────────────────────────────────────────────
+    if cy < footer_top-int(80*sc2):
+        cta_h=int(80*sc2)
+        gradient_rect(draw,0,cy,W2,cy+cta_h,GOLD_DK,GOLD)
+        fCTA=F(int(32*sc2),bold=True)
+        cx_text(draw,content.get("cta","Contact Us Today!"),fCTA,
+                cy+(cta_h-int(40*sc2))//2,W2,NAVY,sw=1,sf=GOLD_DK)
+
+    return canvas.convert("RGB").resize((W,H),Image.LANCZOS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FLYER TYPE 3: PROMO  (bold hero + offer)
+# ─────────────────────────────────────────────────────────────────────────────
+def render_promo(photos, W, H, content, brand):
+    sc=min(W,H)/900
+    W2,H2=W*SSAA,H*SSAA
+    sc2=min(W2,H2)/900
+
+    canvas=Image.new("RGB",(W2,H2),NAVY)
+    draw=ImageDraw.Draw(canvas)
+
+    hdr_bot=draw_header(canvas,draw,W2,brand,sc2)
+    footer_top=draw_footer(canvas,draw,W2,H2,brand,sc2)
+    cy=hdr_bot
+
+    # ── HERO PHOTO (full width, large) ────────────────────────────────────────
+    hero_h=int(420*sc2)
+    if photos:
+        hero=cover_crop(photos[0],W2,hero_h)
+        # Darkening vignette overlay
+        ov=Image.new("RGBA",(W2,hero_h),(0,0,0,0))
+        ovd=ImageDraw.Draw(ov)
+        for y in range(hero_h):
+            t=(y/hero_h)**1.8
+            a=int(200*t)
+            ovd.line([(0,y),(W2,y)],fill=(10,15,40,a))
+        hero_rgba=hero.convert("RGBA")
+        hero_rgba.alpha_composite(ov)
+        canvas.paste(hero_rgba.convert("RGB"),(0,cy))
+    else:
+        gradient_rect(draw,0,cy,W2,cy+hero_h,(50,80,140),NAVY)
+
+    # ── HEADLINE OVER PHOTO ────────────────────────────────────────────────────
+    draw.rectangle([0,cy,W2,cy+int(5*sc2)],fill=GOLD)
+    fHL=F(int(62*sc2),bold=True)
+    fSub=F(int(30*sc2))
+    hl=content.get("headline","JOIN THE ADVENTURE!")
+    lines=wrap_text(hl,fHL,W2-int(80*sc2),draw).split("\n")
+    y_hl=cy+int(22*sc2)
+    for line in lines:
+        cx_text(draw,line,fHL,y_hl,W2,GOLD,sw=3,sf=(0,0,0,200))
+        bb=draw.textbbox((0,0),line,font=fHL)
+        y_hl+=bb[3]-bb[1]+int(8*sc2)
+    cx_text(draw,content.get("subheadline",""),fSub,y_hl,W2,WHITE,sw=2,sf=(0,0,0,160))
+    cy+=hero_h+int(16*sc2)
+
+    # ── OFFER BADGE ────────────────────────────────────────────────────────────
+    offer_h=int(110*sc2)
+    draw.rectangle([0,cy,W2,cy+offer_h],fill=GOLD_LT)
+    draw.rectangle([0,cy,W2,cy+int(4*sc2)],fill=GOLD_DK)
+    draw.rectangle([0,cy+offer_h-int(4*sc2),W2,cy+offer_h],fill=GOLD_DK)
+    fOffer=F(int(26*sc2),bold=True)
+    fPrice=F(int(50*sc2),bold=True)
+    cx_text(draw,content.get("offer_text","EXCLUSIVE DEAL"),fOffer,cy+int(6*sc2),W2,NAVY)
+    cx_text(draw,content.get("price","₹24,999"),fPrice,cy+int(36*sc2),W2,NAVY,sw=1,sf=GOLD_DK)
+    fNote=F(int(18*sc2))
+    cx_text(draw,content.get("price_note","per person | All Inclusive"),fNote,
+            cy+int(90*sc2),W2,TEXT_DARK)
+    cy+=offer_h+int(16*sc2)
+
+    # ── HIGHLIGHT CARDS ────────────────────────────────────────────────────────
+    hls=content.get("highlights",[])
+    if hls:
+        cols=2; rows=(len(hls[:6])+1)//2
+        card_w=(W2-int(48*sc2))//cols; card_h=int(70*sc2)
+        for i,hl_item in enumerate(hls[:6]):
+            col_i=i%cols; row_i=i//cols
+            cx_card=int(16*sc2)+col_i*(card_w+int(16*sc2))
+            cy_card=cy+row_i*(card_h+int(10*sc2))
+            rr(draw,[cx_card,cy_card,cx_card+card_w,cy_card+card_h],
+               int(10*sc2),fill=WHITE,outline=NAVY,width=int(2*sc2))
+            fHl=F(int(22*sc2))
+            draw.text((cx_card+int(16*sc2),cy_card+int(18*sc2)),
+                       f"✓  {hl_item}",font=fHl,fill=NAVY)
+        cy+=rows*(card_h+int(10*sc2))+int(16*sc2)
+
+    # ── MULTI-PHOTO STRIP ─────────────────────────────────────────────────────
+    if len(photos)>1:
+        strip_h=int(120*sc2)
+        n=min(len(photos)-1,4)
+        strip_w=(W2-int((n+1)*8*sc2))//n
+        for i in range(n):
+            px=int(8*sc2)+i*(strip_w+int(8*sc2))
+            tile=cover_crop(photos[i+1],strip_w,strip_h)
+            canvas.paste(tile,(px,cy))
+            # Thin border
+            draw.rectangle([px,cy,px+strip_w,cy+strip_h],outline=WHITE,width=int(3*sc2))
+        cy+=strip_h+int(16*sc2)
+
+    # ── CTA BAND ──────────────────────────────────────────────────────────────
+    if cy < footer_top-int(80*sc2):
+        cta_h=int(80*sc2)
+        gradient_rect(draw,0,cy,W2,cy+cta_h,NAVY_MID,NAVY)
+        draw.rectangle([0,cy,W2,cy+int(4*sc2)],fill=GOLD)
+        fCTA=F(int(28*sc2),bold=True)
+        cx_text(draw,content.get("cta","Book Now! Contact Us Today"),fCTA,
+                cy+(cta_h-int(36*sc2))//2,W2,GOLD,sw=1,sf=GOLD_DK)
+
+    # ── VALID / TAGLINE ────────────────────────────────────────────────────────
+    if content.get("valid_till") and cy+int(40*sc2)<footer_top:
+        fV=F(int(17*sc2))
+        cy2=cy+cta_h+int(8*sc2) if cy < footer_top-int(80*sc2) else cy
+        cx_text(draw,content.get("valid_till","Limited Period Offer"),fV,cy2,W2,(140,140,160))
+
+    return canvas.convert("RGB").resize((W,H),Image.LANCZOS)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OUTPUT HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+def to_bytes(img,fmt="PNG",quality=95):
+    buf=io.BytesIO()
+    img.convert("RGB").save(buf,format=fmt,quality=quality)
     return buf.getvalue()
 
-def make_gif(frames: list, ms: int = 2800) -> bytes:
-    thumbs = []
-    for f in frames:
-        scale = 540/f.width
-        thumbs.append(f.resize((540,int(f.height*scale)),Image.LANCZOS))
-    buf = io.BytesIO()
-    thumbs[0].save(buf,format="GIF",save_all=True,
-                   append_images=thumbs[1:],duration=ms,loop=0,optimize=True)
-    return buf.getvalue()
+def load_photos(raw_bytes_list):
+    """Load and enhance photos from cached bytes."""
+    out=[]
+    for b in raw_bytes_list:
+        try:
+            img=Image.open(io.BytesIO(bytes(b))).convert("RGB")
+            out.append(_enhance(img))
+        except Exception:
+            pass
+    return out
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PAGE
 # ─────────────────────────────────────────────────────────────────────────────
 def render():
     st.markdown("""<style>
-    .hero-h{font-size:2.2rem;font-weight:800;
-      background:linear-gradient(120deg,#f59e0b,#ef4444,#8b5cf6);
+    .fhero{font-size:2rem;font-weight:800;
+      background:linear-gradient(120deg,#c9a84c,#1a2a5e);
       -webkit-background-clip:text;-webkit-text-fill-color:transparent}
-    .hero-s{color:#6b7280;font-size:.9rem;margin-top:2px}
+    .fhero-s{color:#6b7280;font-size:.88rem;margin-top:2px}
     .bdg{display:inline-block;padding:3px 12px;border-radius:20px;
          font-size:.7rem;font-weight:700;margin-right:6px;margin-bottom:8px}
-    .b1{background:linear-gradient(135deg,#7c3aed,#db2777);color:#fff}
-    .b2{background:linear-gradient(135deg,#065f46,#0284c7);color:#fff}
+    .b1{background:#1a2a5e;color:#c9a84c}
+    .b2{background:#c9a84c;color:#1a2a5e}
+    .b3{background:linear-gradient(135deg,#7c3aed,#db2777);color:#fff}
     .empty{border:1px dashed #374151;border-radius:12px;padding:60px 20px;text-align:center}
     .ei{font-size:2.8rem}.et{color:#6b7280;margin-top:8px;font-size:.85rem}
-    .copy-lbl{font-size:.65rem;font-weight:700;letter-spacing:.09em;
-              color:#4b5563;text-transform:uppercase;margin-bottom:3px}
     </style>""", unsafe_allow_html=True)
 
-    st.markdown('<span class="bdg b1">✦ ONE-PROMPT AI</span>'
-                '<span class="bdg b2">📸 REAL PHOTOS + 2× QUALITY</span>',
-                unsafe_allow_html=True)
-    st.markdown('<div class="hero-h">✈ AI Travel Content Studio</div>', unsafe_allow_html=True)
-    st.markdown('<div class="hero-s">Type one line → upload photos → AI generates everything → download</div>',
+    st.markdown('<span class="bdg b1">✈ TRAVEL AGENCY</span>'
+                '<span class="bdg b2">🏆 PRODUCTION FLYERS</span>'
+                '<span class="bdg b3">🤖 AI COPY</span>',unsafe_allow_html=True)
+    st.markdown('<div class="fhero">Professional Flyer Generator</div>',unsafe_allow_html=True)
+    st.markdown('<div class="fhero-s">Like your reference designs — package flyers, service flyers, promo posters</div>',
                 unsafe_allow_html=True)
     st.markdown("---")
 
     # ── BRAND KIT ─────────────────────────────────────────────────────────────
-    with st.expander("🏷️ Brand Kit — Logo · Cert · Social · API Keys", expanded=False):
-        r1,r2,r3 = st.columns(3)
-        with r1:
+    with st.expander("🏷️ Brand Kit — set once, applied to every flyer", expanded=False):
+        b1,b2,b3 = st.columns(3)
+        with b1:
             st.markdown("**🖼️ Company Logo**")
-            lu = st.file_uploader("PNG (transparent)",type=["png","jpg","jpeg"],key="bk_logo")
-            if lu: st.session_state["brand_logo"] = lu.read()
+            lu=st.file_uploader("Logo PNG",type=["png","jpg","jpeg"],key="bk_logo")
+            if lu: st.session_state["brand_logo"]=lu.read()
             if st.session_state.get("brand_logo"):
-                st.image(st.session_state["brand_logo"],width=100)
-                if st.button("✕ Remove",key="rm_logo"): del st.session_state["brand_logo"]
-        with r2:
-            st.markdown("**🏅 Cert / Award Badge**")
-            cu = st.file_uploader("Badge",type=["png","jpg","jpeg"],key="bk_cert")
-            if cu: st.session_state["brand_cert"] = cu.read()
+                st.image(st.session_state["brand_logo"],width=110)
+                if st.button("✕",key="rm_logo"): del st.session_state["brand_logo"]
+
+        with b2:
+            st.markdown("**🏅 Cert Badge**")
+            cu=st.file_uploader("Badge",type=["png","jpg","jpeg"],key="bk_cert")
+            if cu: st.session_state["brand_cert"]=cu.read()
             if st.session_state.get("brand_cert"):
-                st.image(st.session_state["brand_cert"],width=78)
-                if st.button("✕ Remove",key="rm_cert"): del st.session_state["brand_cert"]
-        with r3:
-            st.markdown("**🔗 Social Links**")
-            fb_v  = st.text_input("Facebook", value=st.session_state.get("bk_fb",""),key="_fb")
-            ig_v  = st.text_input("Instagram",value=st.session_state.get("bk_ig",""),key="_ig")
-            wb_v  = st.text_input("Website",  value=st.session_state.get("bk_wb",""),key="_wb")
-            lp_v  = st.radio("Logo pos",["Top Right","Top Left","Bottom Right","Bottom Left"],
-                              horizontal=True,key="bk_lpos")
+                st.image(st.session_state["brand_cert"],width=80)
+            st.markdown("**Certifications (comma-separated):**")
+            certs_raw=st.text_input("",value=st.session_state.get("bk_certs","IATA,OTAI,ADTOI,NIMA,ETAA"),
+                                     key="_certs",label_visibility="collapsed")
+            st.session_state["bk_certs"]=certs_raw
+
+        with b3:
+            st.markdown("**🏢 Company Details**")
+            bn=st.text_input("Company Name",value=st.session_state.get("bk_name","7 WONDERS WORLD"),key="_bn")
+            bsuffix=st.text_input("Line 2",value=st.session_state.get("bk_suffix","TRAVELS PVT LTD"),key="_bsuffix")
+            bsince=st.text_input("Est. / Since",value=st.session_state.get("bk_since","SINCE 2015"),key="_bsince")
+            bweb=st.text_input("Website",value=st.session_state.get("bk_web","www.7wwtravels.com"),key="_bweb")
+            bphone=st.text_input("Phone",value=st.session_state.get("bk_phone","+91 97112 81598"),key="_bphone")
+            be1=st.text_input("Email 1",value=st.session_state.get("bk_e1","vidhi@7wwtravels.com"),key="_be1")
+            be2=st.text_input("Email 2",value=st.session_state.get("bk_e2","anand@7wwtravels.com"),key="_be2")
+
+            st.markdown("**📱 Social Handles**")
+            bfb=st.text_input("Facebook",value=st.session_state.get("bk_fb","7wwtravels"),key="_bfb")
+            big=st.text_input("Instagram",value=st.session_state.get("bk_ig","7ww_travels"),key="_big")
+            byt=st.text_input("YouTube",value=st.session_state.get("bk_yt","@7wwtravels"),key="_byt")
+            bli=st.text_input("LinkedIn",value=st.session_state.get("bk_li","7wwtravels/"),key="_bli")
+
             if st.button("💾 Save Brand Kit",use_container_width=True):
-                st.session_state.update(bk_fb=fb_v,bk_ig=ig_v,bk_wb=wb_v)
-                st.success("Saved!")
+                st.session_state.update(
+                    bk_name=bn,bk_suffix=bsuffix,bk_since=bsince,
+                    bk_web=bweb,bk_phone=bphone,bk_e1=be1,bk_e2=be2,
+                    bk_fb=bfb,bk_ig=big,bk_yt=byt,bk_li=bli)
+                st.success("Brand Kit saved!")
 
         st.markdown("---")
-        st.markdown("##### 🔑 LLM API Keys — free")
-        k1,k2 = st.columns(2)
-        with k1:
-            gq = st.text_input("⚡ Groq (fast & free)",type="password",
-                                value=st.session_state.get("groq_key",""),
-                                placeholder="gsk_xxxxxxxxxx",
-                                help="console.groq.com → API Keys → Create")
-            if gq: st.session_state["groq_key"] = gq.strip()
+        st.markdown("##### 🔑 AI Keys (free)")
+        ka,kb=st.columns(2)
+        with ka:
+            gq=st.text_input("⚡ Groq",type="password",
+                              value=st.session_state.get("groq_key",""),
+                              placeholder="gsk_...",key="gq_in",
+                              help="console.groq.com → free, fast")
+            if gq: st.session_state["groq_key"]=gq.strip()
             st.success("✓ Groq active") if _groq_key() else st.info("console.groq.com")
-        with k2:
-            gm = st.text_input("🔵 Gemini (fallback)",type="password",
-                                value=st.session_state.get("gemini_key",""),
-                                placeholder="AIzaSy...",
-                                help="aistudio.google.com/app/apikey")
-            if gm: st.session_state["gemini_key"] = gm.strip()
+        with kb:
+            gm=st.text_input("🔵 Gemini",type="password",
+                              value=st.session_state.get("gemini_key",""),
+                              placeholder="AIzaSy...",key="gm_in",
+                              help="aistudio.google.com/app/apikey — 250 req/day free")
+            if gm: st.session_state["gemini_key"]=gm.strip()
             st.success("✓ Gemini active") if _gemini_key() else st.info("aistudio.google.com")
 
-    logo_bytes = st.session_state.get("brand_logo")
-    cert_bytes = st.session_state.get("brand_cert")
-    bk_fb  = st.session_state.get("bk_fb","")
-    bk_ig  = st.session_state.get("bk_ig","")
-    bk_wb  = st.session_state.get("bk_wb","")
-    logo_pos = st.session_state.get("bk_lpos","Top Right")
-
-    st.markdown("---")
-    st.markdown("### ✍️ Describe your travel package in one line")
-    st.caption("AI generates: title · price · highlights · captions · hashtags · theme · layout · everything")
-
-    free_text = st.text_area("",height=90,key="free_text_input",
-        placeholder="7 day Rajasthan trip with desert safari, camel ride, Jaipur, Udaipur, 3 star hotels, ₹25000 per person, family package",
-        label_visibility="collapsed")
-
-    photos_input = st.file_uploader("📸 Upload 1-8 travel photos",
-        type=["jpg","jpeg","png","webp"],accept_multiple_files=True,key="main_photos")
-
-    # ── Read ALL photo bytes ONCE immediately — prevents BytesIO drain ────────
-    if photos_input:
-        uploaded_names = [pf.name for pf in photos_input]
-        if st.session_state.get("_unames") != uploaded_names:
-            fresh = []
-            for pf in photos_input[:8]:
-                try:
-                    pf.seek(0)
-                    raw = pf.read()
-                    if raw and len(raw)>100:
-                        # Validate it's a real image
-                        Image.open(io.BytesIO(raw)).verify()
-                        fresh.append(raw)
-                except Exception:
-                    pass
-            st.session_state["_photo_bytes"] = fresh
-            st.session_state["_unames"] = uploaded_names
-
-    cached_bytes: list = st.session_state.get("_photo_bytes", [])
-
-    # Thumbnail strip
-    if cached_bytes:
-        cols = st.columns(min(len(cached_bytes),8))
-        for i,b in enumerate(cached_bytes):
-            try:
-                img = Image.open(io.BytesIO(b))
-                s = 120/img.width
-                thumb = img.resize((120,int(img.height*s)),Image.LANCZOS)
-                cols[i].image(to_bytes(thumb),use_container_width=True)
-            except Exception:
-                cols[i].warning(f"⚠ Photo {i+1}")
-
-    # Generate button
-    cg1,cg2 = st.columns([3,1])
-    with cg1:
-        big_gen = st.button("🚀 Generate All Content",type="primary",use_container_width=True,
-                             disabled=not(free_text.strip() and cached_bytes))
-    with cg2:
-        if not _llm_ok(): st.warning("Add API key ↑")
-        elif not free_text.strip(): st.info("Describe package ↑")
-        elif not cached_bytes: st.info("Upload photos ↑")
-
-    if big_gen and free_text.strip() and cached_bytes:
-        with st.spinner("🤖 AI generating complete package content…"):
-            ai_data = ai_generate_all(free_text, len(cached_bytes))
-        st.session_state.update(ai_data=ai_data, ai_photos=cached_bytes)
-        st.success(f"✅ {ai_data.get('headline','')}  ·  Theme: {ai_data.get('theme','')}  ·  Layout: {ai_data.get('layout','')}")
-
-    ai = st.session_state.get("ai_data", {})
-    raw_photos: list = st.session_state.get("ai_photos", [])
-
-    # No key fallback
-    if not ai and big_gen and not _llm_ok() and cached_bytes:
-        ai = ai_generate_all(free_text, len(cached_bytes))
-        st.session_state.update(ai_data=ai, ai_photos=cached_bytes)
-        raw_photos = cached_bytes
+    # Build brand dict from session
+    brand = {
+        "name":    st.session_state.get("bk_name","7 WONDERS WORLD"),
+        "suffix":  st.session_state.get("bk_suffix","TRAVELS PVT LTD"),
+        "since":   st.session_state.get("bk_since","SINCE 2015"),
+        "website": st.session_state.get("bk_web","www.7wwtravels.com"),
+        "phone":   st.session_state.get("bk_phone","+91 97112 81598"),
+        "email1":  st.session_state.get("bk_e1","vidhi@7wwtravels.com"),
+        "email2":  st.session_state.get("bk_e2","anand@7wwtravels.com"),
+        "facebook":  st.session_state.get("bk_fb","7wwtravels"),
+        "instagram": st.session_state.get("bk_ig","7ww_travels"),
+        "youtube":   st.session_state.get("bk_yt","@7wwtravels"),
+        "linkedin":  st.session_state.get("bk_li","7wwtravels/"),
+        "certs": [c.strip() for c in st.session_state.get("bk_certs","IATA,OTAI,ADTOI,NIMA,ETAA").split(",") if c.strip()],
+    }
 
     st.markdown("---")
 
-    tab_banner, tab_copy, tab_video, tab_bulk = st.tabs([
-        "🖼️ Banner Studio","📋 AI Copy & Captions","🎬 Video Slideshow","📦 Bulk Export"
+    # ── FLYER TABS ────────────────────────────────────────────────────────────
+    tab_pkg, tab_svc, tab_promo, tab_bulk = st.tabs([
+        "📦 Package Flyer",
+        "🛂 Service Flyer",
+        "🎯 Promo Flyer",
+        "📥 Bulk Export",
     ])
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TAB 1 — BANNER STUDIO
-    # ═══════════════════════════════════════════════════════════════════════
-    with tab_banner:
-        if not ai:
-            st.markdown('<div class="empty"><div class="ei">✍️</div>'
-                        '<div class="et">Describe your package above and click Generate</div></div>',
-                        unsafe_allow_html=True)
-        else:
-            sl,sr = st.columns([1,1],gap="large")
-            with sl:
-                st.markdown("### 🎨 Customise")
-                c1,c2 = st.columns(2)
-                with c1:
-                    sel_theme = st.selectbox("Theme",list(THEMES.keys()),
-                        index=list(THEMES.keys()).index(ai.get("theme","Golden Hour"))
-                              if ai.get("theme") in THEMES else 0, key="st_theme")
-                with c2:
-                    sel_layout = st.selectbox("Layout",LAYOUTS,
-                        index=LAYOUTS.index(ai.get("layout","Hero + Strip (2 photos)"))
-                              if ai.get("layout") in LAYOUTS else 1, key="st_layout")
-                c3,c4 = st.columns(2)
-                with c3:
-                    sel_plat = st.selectbox("Platform",list(PLATFORMS.keys()),key="st_plat")
-                with c4:
-                    sel_lpos = st.selectbox("Logo pos",
-                        ["Top Right","Top Left","Bottom Right","Bottom Left"],
-                        index=["Top Right","Top Left","Bottom Right","Bottom Left"].index(logo_pos),
-                        key="st_lpos")
+    # ════════════════════════════════════════════════════════════════════════
+    # PACKAGE FLYER
+    # ════════════════════════════════════════════════════════════════════════
+    with tab_pkg:
+        st.markdown("### 📦 Tour Package Flyer")
+        st.caption("Like your Bhutan reference — photo collage + itinerary + price box + hotel list")
+        pl,pr=st.columns([1,1],gap="large")
+        with pl:
+            st.markdown("**📸 Destination Photos (upload 2-4)**")
+            pkg_photos=st.file_uploader("",type=["jpg","jpeg","png","webp"],
+                                         accept_multiple_files=True,key="pkg_photos",
+                                         label_visibility="collapsed")
+            # Read bytes immediately
+            pkg_bytes=[]
+            if pkg_photos:
+                names=[p.name for p in pkg_photos]
+                if st.session_state.get("_pkg_names")!=names:
+                    fresh=[]
+                    for p in pkg_photos[:6]:
+                        try:
+                            p.seek(0); b=p.read()
+                            if b and len(b)>100:
+                                Image.open(io.BytesIO(b)).verify()
+                                fresh.append(b)
+                        except Exception: pass
+                    st.session_state["_pkg_bytes"]=fresh
+                    st.session_state["_pkg_names"]=names
+                pkg_bytes=st.session_state.get("_pkg_bytes",[])
+                if pkg_bytes:
+                    cols=st.columns(min(len(pkg_bytes),4))
+                    for i,b in enumerate(pkg_bytes):
+                        try:
+                            img=Image.open(io.BytesIO(b))
+                            s=100/img.width
+                            cols[i].image(to_bytes(img.resize((100,int(img.height*s)),Image.LANCZOS)),
+                                           use_container_width=True)
+                        except Exception: pass
+            else:
+                pkg_bytes=st.session_state.get("_pkg_bytes",[])
 
-                st.markdown("#### 🔧 Fine-tune")
-                pkg_name  = st.text_input("Package Name",value=ai.get("package_name",""),key="ft_pkg")
-                headline  = st.text_input("Headline",    value=ai.get("headline",""),   key="ft_hl")
-                subline   = st.text_input("Subheadline", value=ai.get("subheadline",""),key="ft_sub")
-                price_val = st.text_input("Price",       value=ai.get("price",""),      key="ft_price")
-                cta_val   = st.text_input("CTA",         value=ai.get("cta","Book Now →"),key="ft_cta")
-                hl_raw    = st.text_area("Highlights (one per line)",
-                                          value="\n".join(ai.get("highlights",[])),
-                                          height=110,key="ft_hllist")
-                hl_list   = [l.strip() for l in hl_raw.splitlines() if l.strip()]
-                c5,c6 = st.columns(2)
-                with c5: show_price = st.checkbox("Show price",value=True,key="ft_sp")
-                with c6: show_cta   = st.checkbox("Show CTA",  value=True,key="ft_sc")
-                enhance_p = st.checkbox("Auto-enhance photo colours",value=True,key="ft_enh")
+            st.markdown("**QR Code (optional)**")
+            qr_file=st.file_uploader("QR code image",type=["png","jpg"],key="pkg_qr")
+            qr_bytes=qr_file.read() if qr_file else None
 
-                gen_banner = st.button("🎨 Render Banner",type="primary",
-                                        use_container_width=True,disabled=not raw_photos)
+            st.markdown("**✍️ Describe the package**")
+            pkg_prompt=st.text_area("",height=90,key="pkg_prompt",
+                placeholder="Bhutan 5 nights 6 days, Rs 28777 per person, Thimphu 2N + Punakha 1N + Paro 2N, twin sharing, breakfast dinner included, Toyota vehicle",
+                label_visibility="collapsed")
+            platform=st.selectbox("Platform",list(PLATFORMS.keys()),key="pkg_plat")
 
-            with sr:
-                st.markdown("### 👁️ Preview")
-                if gen_banner and raw_photos:
-                    sw,sh = PLATFORMS[sel_plat]
-                    content = dict(package_name=pkg_name,headline=headline,
-                                   subheadline=subline,price=price_val,
-                                   cta=cta_val,highlights=hl_list)
-                    with st.spinner(f"Compositing at 2× → {sw}×{sh}…"):
-                        banner = compose(raw_photos,sw,sh,sel_theme,sel_layout,content,
-                                         logo_bytes,sel_lpos,cert_bytes,bk_fb,bk_ig,bk_wb,
-                                         show_price=show_price,show_cta=show_cta,enhance=enhance_p)
-                    st.session_state.update(
-                        s_png=to_bytes(banner,"PNG"),
-                        s_jpg=to_bytes(banner,"JPEG",92),
-                        s_name=f"{pkg_name or 'banner'}_{sel_plat[:14]}")
+            st.markdown("**🔧 Manual overrides** (leave blank to use AI)")
+            pkg_hl   =st.text_input("Headline (optional)",key="pkg_hl")
+            pkg_price=st.text_input("Price (optional)",key="pkg_price")
+            pkg_valid=st.text_input("Valid till (optional)",key="pkg_valid")
 
-                if st.session_state.get("s_png"):
-                    st.image(st.session_state["s_png"],use_container_width=True)
-                    d1,d2 = st.columns(2)
-                    with d1:
-                        st.download_button("📥 PNG",data=st.session_state["s_png"],
-                            file_name=f"{st.session_state['s_name']}.png",
-                            mime="image/png",use_container_width=True)
-                    with d2:
-                        st.download_button("📥 JPEG",data=st.session_state["s_jpg"],
-                            file_name=f"{st.session_state['s_name']}.jpg",
-                            mime="image/jpeg",use_container_width=True)
-                    st.success("✅ Production-quality banner ready!")
-                else:
-                    st.markdown('<div class="empty"><div class="ei">🎨</div>'
-                                '<div class="et">Click Render Banner to preview</div></div>',
-                                unsafe_allow_html=True)
+            gen_pkg=st.button("🚀 Generate Package Flyer",type="primary",
+                               use_container_width=True,
+                               disabled=not pkg_prompt.strip())
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TAB 2 — AI COPY
-    # ═══════════════════════════════════════════════════════════════════════
-    with tab_copy:
-        if not ai:
-            st.markdown('<div class="empty"><div class="ei">📋</div>'
-                        '<div class="et">Generate content first</div></div>',unsafe_allow_html=True)
-        else:
-            st.markdown("### 📋 All AI-Generated Copy")
-            def _cbox(label,val):
-                if not val: return
-                st.markdown(f'<div class="copy-lbl">{label}</div>',unsafe_allow_html=True)
-                v="\n".join(f"• {h}" for h in val) if isinstance(val,list) else str(val)
-                st.text_area("",value=v,height=max(68,min(220,v.count("\n")*30+68)),
-                              key=f"cp_{label}",label_visibility="collapsed")
-            c1,c2 = st.columns(2)
-            with c1:
-                _cbox("HEADLINE",     ai.get("headline",""))
-                _cbox("SUBHEADLINE",  ai.get("subheadline",""))
-                _cbox("PACKAGE NAME", ai.get("package_name",""))
-                _cbox("PRICE",        ai.get("price",""))
-                _cbox("DURATION",     ai.get("duration",""))
-                _cbox("CTA",          ai.get("cta",""))
-                _cbox("HIGHLIGHTS",   ai.get("highlights",[]))
-                _cbox("HASHTAGS",     ai.get("hashtags",""))
-            with c2:
-                _cbox("📺 YouTube Title",       ai.get("youtube_title",""))
-                _cbox("📺 YouTube Description", ai.get("youtube_desc",""))
-                _cbox("📸 Instagram Caption",   ai.get("instagram_caption",""))
-                _cbox("👥 Facebook Caption",    ai.get("facebook_caption",""))
-                _cbox("📱 WhatsApp Status",     ai.get("whatsapp_status",""))
-                _cbox("🎬 30-sec Reel Script",  ai.get("reel_script",""))
-            st.markdown("---")
-            st.info(f"🎨 AI theme: **{ai.get('theme','')}**  ·  Layout: **{ai.get('layout','')}**  ·  Mood: **{ai.get('mood','')}**")
+        with pr:
+            st.markdown("### 👁️ Preview")
+            if gen_pkg and pkg_prompt.strip():
+                with st.spinner("🤖 AI generating package content…"):
+                    content=ai_content(pkg_prompt,"PACKAGE",brand)
+                if pkg_hl:    content["headline"]=pkg_hl
+                if pkg_price: content["price"]=pkg_price
+                if pkg_valid: content["price_validity"]=pkg_valid
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TAB 3 — VIDEO SLIDESHOW
-    # ═══════════════════════════════════════════════════════════════════════
-    with tab_video:
-        st.markdown("### 🎬 Animated Slideshow (20-30 sec)")
-        st.info("Each photo = one AI-captioned scene → GIF → CapCut → add music → MP4 Reels/Shorts")
-        if not ai or not raw_photos:
-            st.markdown('<div class="empty"><div class="ei">🎬</div>'
-                        '<div class="et">Generate content + upload photos first</div></div>',
-                        unsafe_allow_html=True)
-        else:
-            vl,vr = st.columns([1,1],gap="large")
-            with vl:
-                v_theme = st.selectbox("Theme",list(THEMES.keys()),
-                    index=list(THEMES.keys()).index(ai.get("theme","Golden Hour"))
-                          if ai.get("theme") in THEMES else 0,key="v_theme")
-                v_plat  = st.selectbox("Format",[
-                    "Instagram Story 9:16 (1080×1920)",
-                    "YouTube Shorts 9:16 (1080×1920)",
-                    "Instagram Post 1:1 (1080×1080)",
-                    "YouTube Thumbnail 16:9 (1280×720)",
-                ],key="v_plat")
-                _vsize_map = {
-                    "Instagram Story 9:16 (1080×1920)":(1080,1920),
-                    "YouTube Shorts 9:16 (1080×1920)":(1080,1920),
-                    "Instagram Post 1:1 (1080×1080)":(1080,1080),
-                    "YouTube Thumbnail 16:9 (1280×720)":(1280,720),
-                }
-                vw,vh = _vsize_map[v_plat]
-                v_dur   = st.slider("Seconds per scene",2,5,3,key="v_dur")
-                v_sp    = st.checkbox("Show price on last slide",value=True,key="v_sp")
-                v_enh   = st.checkbox("Auto-enhance photos",value=True,key="v_enh")
+                photos=load_photos(pkg_bytes)
+                W,H=PLATFORMS[platform]
+                with st.spinner(f"Rendering {W}×{H} at 2× quality…"):
+                    flyer=render_package(photos,W,H,content,brand,qr_bytes)
 
-                st.markdown("#### 📝 Scene Captions")
-                st.caption("AI-suggested — edit any")
-                ai_caps = ai.get("slide_captions",[f"Scene {i+1}" for i in range(8)])
-                user_caps = []
-                for i in range(len(raw_photos[:8])):
-                    cap = st.text_input(f"Slide {i+1}",
-                                         value=ai_caps[i] if i<len(ai_caps) else f"Slide {i+1}",
-                                         key=f"vcap_{i}")
-                    user_caps.append(cap)
+                st.session_state.update(pkg_flyer=to_bytes(flyer,"JPEG",95),
+                                         pkg_flyer_png=to_bytes(flyer,"PNG"),
+                                         pkg_content=content)
 
-                v_gen = st.button("🎬 Generate Slideshow",type="primary",use_container_width=True)
+            if st.session_state.get("pkg_flyer"):
+                st.image(st.session_state["pkg_flyer"],use_container_width=True)
+                d1,d2=st.columns(2)
+                with d1:
+                    st.download_button("📥 JPEG",data=st.session_state["pkg_flyer"],
+                        file_name="package_flyer.jpg",mime="image/jpeg",use_container_width=True)
+                with d2:
+                    st.download_button("📥 PNG",data=st.session_state["pkg_flyer_png"],
+                        file_name="package_flyer.png",mime="image/png",use_container_width=True)
+                st.success("✅ Ready!")
 
-            with vr:
-                st.markdown("### 👁️ Preview")
-                if v_gen:
-                    frames=[]; total=len(raw_photos[:8])
-                    prog=st.progress(0,"Compositing frames…")
-                    live_cols=st.columns(min(total,4))
-                    content_vid=dict(package_name=ai.get("package_name",""),
-                                      headline="",subheadline="",highlights=[],
-                                      price=ai.get("price",""),cta=ai.get("cta","Book Now →"))
-                    for idx,b in enumerate(raw_photos[:8]):
-                        prog.progress(idx/total,text=f"Scene {idx+1}/{total}…")
-                        cap=user_caps[idx] if idx<len(user_caps) else f"Slide {idx+1}"
-                        frame=compose([b],vw,vh,v_theme,"Hero (1 photo)",content_vid,
-                                       logo_bytes,logo_pos,cert_bytes,bk_fb,bk_ig,bk_wb,
-                                       show_price=(idx==total-1 and v_sp),
-                                       show_cta=(idx==total-1),enhance=v_enh,
-                                       slide_caption=cap,
-                                       slide_num=f"{idx+1:02d}/{total:02d}")
-                        frames.append(frame)
-                        ci=idx%4
-                        if ci<len(live_cols):
-                            sc_=110/frame.width
-                            th=frame.resize((110,int(frame.height*sc_)),Image.LANCZOS)
-                            live_cols[ci].image(to_bytes(th),caption=cap[:14],use_container_width=True)
+                if st.session_state.get("pkg_content"):
+                    c=st.session_state["pkg_content"]
+                    with st.expander("📋 AI-Generated Copy"):
+                        st.text_area("Hashtags",value=c.get("hashtags",""),height=60)
+                        st.text_area("Tagline",value=c.get("tagline",""),height=50)
+            else:
+                st.markdown('<div class="empty"><div class="ei">📦</div>'
+                            '<div class="et">Fill in details → Generate</div></div>',
+                            unsafe_allow_html=True)
 
-                    prog.progress(1.0,text="Building GIF…")
-                    gif=make_gif(frames,ms=v_dur*1000)
-                    st.session_state.update(v_gif=gif,
-                        v_frames=[to_bytes(f) for f in frames],
-                        v_pkg=ai.get("package_name","video"))
-                    prog.empty()
-                    st.success(f"✅ {len(frames)}-scene GIF · {len(gif)//1024} KB")
+    # ════════════════════════════════════════════════════════════════════════
+    # SERVICE FLYER
+    # ════════════════════════════════════════════════════════════════════════
+    with tab_svc:
+        st.markdown("### 🛂 Service / Visa Flyer")
+        st.caption("Like your 'Your Gateway to the World' reference — services as colored pills")
+        sl,sr=st.columns([1,1],gap="large")
+        with sl:
+            st.markdown("**📸 Hero Photo (optional)**")
+            svc_photo=st.file_uploader("Background photo",type=["jpg","jpeg","png","webp"],key="svc_photo")
+            svc_bytes=[]
+            if svc_photo:
+                try:
+                    svc_photo.seek(0); b=svc_photo.read()
+                    Image.open(io.BytesIO(b)).verify()
+                    svc_bytes=[b]
+                    st.image(b,use_container_width=True)
+                except Exception:
+                    st.warning("Invalid image")
 
-                gif=st.session_state.get("v_gif")
-                if gif:
-                    b64=base64.b64encode(gif).decode()
-                    st.markdown(f'<img src="data:image/gif;base64,{b64}" '
-                                f'style="width:100%;border-radius:12px">',unsafe_allow_html=True)
-                    d1,d2=st.columns(2)
-                    with d1:
-                        st.download_button("📥 Download GIF",data=gif,
-                            file_name=f"{st.session_state.get('v_pkg','video')}_slideshow.gif",
-                            mime="image/gif",use_container_width=True)
-                    with d2:
-                        if st.session_state.get("v_frames"):
-                            zbuf=io.BytesIO()
-                            with zipfile.ZipFile(zbuf,"w") as zf:
-                                for i,fb2 in enumerate(st.session_state["v_frames"]):
-                                    zf.writestr(f"scene_{i+1:02d}.png",fb2)
-                            zbuf.seek(0)
-                            st.download_button("📥 Frames ZIP",data=zbuf.getvalue(),
-                                file_name="scenes.zip",mime="application/zip",use_container_width=True)
-                    st.markdown("**🎵 To MP4:** GIF → [CapCut](https://capcut.com) → music from "
-                                "[YouTube Audio Library](https://studio.youtube.com/channel/music) or "
-                                "[Pixabay Music](https://pixabay.com/music/) → export 1080p → upload!")
-                else:
-                    st.markdown('<div class="empty"><div class="ei">🎬</div>'
-                                '<div class="et">Click Generate Slideshow</div></div>',unsafe_allow_html=True)
+            st.markdown("**✍️ Describe your services**")
+            svc_prompt=st.text_area("",height=90,key="svc_prompt",
+                placeholder="Visa services for all countries — tourist visa, business visa, tour packages, hotel bookings, euro rail, flight bookings",
+                label_visibility="collapsed")
+            svc_plat=st.selectbox("Platform",list(PLATFORMS.keys()),key="svc_plat")
 
-    # ═══════════════════════════════════════════════════════════════════════
-    # TAB 4 — BULK EXPORT
-    # ═══════════════════════════════════════════════════════════════════════
+            svc_hl=st.text_input("Headline (optional)",key="svc_hl")
+            gen_svc=st.button("🚀 Generate Service Flyer",type="primary",
+                               use_container_width=True,disabled=not svc_prompt.strip())
+
+        with sr:
+            st.markdown("### 👁️ Preview")
+            if gen_svc and svc_prompt.strip():
+                with st.spinner("🤖 AI generating service content…"):
+                    content=ai_content(svc_prompt,"SERVICE",brand)
+                if svc_hl: content["headline"]=svc_hl
+
+                photos=load_photos(svc_bytes)
+                W,H=PLATFORMS[svc_plat]
+                with st.spinner(f"Rendering {W}×{H}…"):
+                    flyer=render_service(photos,W,H,content,brand)
+
+                st.session_state.update(svc_flyer=to_bytes(flyer,"JPEG",95),
+                                         svc_flyer_png=to_bytes(flyer,"PNG"))
+
+            if st.session_state.get("svc_flyer"):
+                st.image(st.session_state["svc_flyer"],use_container_width=True)
+                d1,d2=st.columns(2)
+                with d1:
+                    st.download_button("📥 JPEG",data=st.session_state["svc_flyer"],
+                        file_name="service_flyer.jpg",mime="image/jpeg",use_container_width=True)
+                with d2:
+                    st.download_button("📥 PNG",data=st.session_state["svc_flyer_png"],
+                        file_name="service_flyer.png",mime="image/png",use_container_width=True)
+                st.success("✅ Ready!")
+            else:
+                st.markdown('<div class="empty"><div class="ei">🛂</div>'
+                            '<div class="et">Fill in details → Generate</div></div>',
+                            unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # PROMO FLYER
+    # ════════════════════════════════════════════════════════════════════════
+    with tab_promo:
+        st.markdown("### 🎯 Promotional Flyer")
+        st.caption("Bold hero photo + offer price + highlights — like 'Join the Adventure' reference")
+        ol,or_=st.columns([1,1],gap="large")
+        with ol:
+            st.markdown("**📸 Photos (upload 1-4)**")
+            promo_photos=st.file_uploader("",type=["jpg","jpeg","png","webp"],
+                                           accept_multiple_files=True,key="promo_photos",
+                                           label_visibility="collapsed")
+            promo_bytes=[]
+            if promo_photos:
+                names=[p.name for p in promo_photos]
+                if st.session_state.get("_promo_names")!=names:
+                    fresh=[]
+                    for p in promo_photos[:5]:
+                        try:
+                            p.seek(0); b=p.read()
+                            if b and len(b)>100:
+                                Image.open(io.BytesIO(b)).verify()
+                                fresh.append(b)
+                        except Exception: pass
+                    st.session_state["_promo_bytes"]=fresh
+                    st.session_state["_promo_names"]=names
+                promo_bytes=st.session_state.get("_promo_bytes",[])
+                if promo_bytes:
+                    cols=st.columns(min(len(promo_bytes),4))
+                    for i,b in enumerate(promo_bytes):
+                        try:
+                            img=Image.open(io.BytesIO(b))
+                            s=100/img.width
+                            cols[i].image(to_bytes(img.resize((100,int(img.height*s)),Image.LANCZOS)),
+                                           use_container_width=True)
+                        except Exception: pass
+            else:
+                promo_bytes=st.session_state.get("_promo_bytes",[])
+
+            st.markdown("**✍️ Describe the promotion**")
+            promo_prompt=st.text_area("",height=90,key="promo_prompt",
+                placeholder="Special summer offer — Europe tours from Rs 89,999, flights + hotels + visa, 10 nights, limited seats available",
+                label_visibility="collapsed")
+            promo_plat=st.selectbox("Platform",list(PLATFORMS.keys()),key="promo_plat")
+            promo_hl=st.text_input("Headline (optional)",key="promo_hl")
+            promo_price=st.text_input("Price (optional)",key="promo_price")
+            gen_promo=st.button("🚀 Generate Promo Flyer",type="primary",
+                                 use_container_width=True,disabled=not promo_prompt.strip())
+
+        with or_:
+            st.markdown("### 👁️ Preview")
+            if gen_promo and promo_prompt.strip():
+                with st.spinner("🤖 AI generating promo content…"):
+                    content=ai_content(promo_prompt,"PROMO",brand)
+                if promo_hl:    content["headline"]=promo_hl
+                if promo_price: content["price"]=promo_price
+
+                photos=load_photos(promo_bytes)
+                W,H=PLATFORMS[promo_plat]
+                with st.spinner(f"Rendering {W}×{H}…"):
+                    flyer=render_promo(photos,W,H,content,brand)
+
+                st.session_state.update(promo_flyer=to_bytes(flyer,"JPEG",95),
+                                         promo_flyer_png=to_bytes(flyer,"PNG"),
+                                         promo_content=content)
+
+            if st.session_state.get("promo_flyer"):
+                st.image(st.session_state["promo_flyer"],use_container_width=True)
+                d1,d2=st.columns(2)
+                with d1:
+                    st.download_button("📥 JPEG",data=st.session_state["promo_flyer"],
+                        file_name="promo_flyer.jpg",mime="image/jpeg",use_container_width=True)
+                with d2:
+                    st.download_button("📥 PNG",data=st.session_state["promo_flyer_png"],
+                        file_name="promo_flyer.png",mime="image/png",use_container_width=True)
+                st.success("✅ Ready!")
+                if st.session_state.get("promo_content"):
+                    c=st.session_state["promo_content"]
+                    with st.expander("📋 AI Copy"):
+                        st.text_area("Hashtags",value=c.get("hashtags",""),height=60)
+            else:
+                st.markdown('<div class="empty"><div class="ei">🎯</div>'
+                            '<div class="et">Fill in details → Generate</div></div>',
+                            unsafe_allow_html=True)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # BULK EXPORT
+    # ════════════════════════════════════════════════════════════════════════
     with tab_bulk:
-        st.markdown("### 📦 All Platforms in One ZIP")
-        if not ai or not raw_photos:
-            st.markdown('<div class="empty"><div class="ei">📦</div>'
-                        '<div class="et">Generate content + upload photos first</div></div>',
+        st.markdown("### 📥 Bulk Export — same flyer in all platform sizes")
+        st.info("Uses whichever flyer was last generated (Package / Service / Promo)")
+
+        generated={}
+        if st.session_state.get("pkg_flyer_png"):    generated["Package"]=st.session_state["pkg_flyer_png"]
+        if st.session_state.get("svc_flyer_png"):    generated["Service"]=st.session_state["svc_flyer_png"]
+        if st.session_state.get("promo_flyer_png"):  generated["Promo"]=st.session_state["promo_flyer_png"]
+
+        if not generated:
+            st.markdown('<div class="empty"><div class="ei">📥</div>'
+                        '<div class="et">Generate a flyer first in the other tabs</div></div>',
                         unsafe_allow_html=True)
         else:
-            bl,br = st.columns([1,1],gap="large")
-            with bl:
-                b_theme  = st.selectbox("Theme",list(THEMES.keys()),
-                    index=list(THEMES.keys()).index(ai.get("theme","Golden Hour"))
-                          if ai.get("theme") in THEMES else 0,key="b_theme")
-                b_layout = st.selectbox("Layout",LAYOUTS,
-                    index=LAYOUTS.index(ai.get("layout","Hero + Strip (2 photos)"))
-                          if ai.get("layout") in LAYOUTS else 1,key="b_layout")
-                b_plats  = st.multiselect("Export for",list(PLATFORMS.keys()),
-                                           default=list(PLATFORMS.keys())[:5])
-                b_gen    = st.button("📦 Generate All Sizes",type="primary",
-                                      use_container_width=True,disabled=not b_plats)
-            with br:
-                st.markdown("### 📋 Results")
-                if b_gen and b_plats:
-                    content=dict(package_name=ai.get("package_name",""),
-                                  headline=ai.get("headline",""),subheadline=ai.get("subheadline",""),
-                                  price=ai.get("price",""),cta=ai.get("cta","Book Now →"),
-                                  highlights=ai.get("highlights",[]))
-                    zbuf=io.BytesIO(); prog=st.progress(0); preview_done=False
-                    with zipfile.ZipFile(zbuf,"w",zipfile.ZIP_DEFLATED) as zf:
-                        for i,pname in enumerate(b_plats):
-                            pw,ph = PLATFORMS[pname]
-                            banner=compose(raw_photos,pw,ph,b_theme,b_layout,content,
-                                            logo_bytes,logo_pos,cert_bytes,bk_fb,bk_ig,bk_wb)
-                            safe=re.sub(r"[^\w]"," ",pname).strip().replace(" ","_")[:28]
-                            zf.writestr(f"{ai.get('package_name','banner')}_{safe}_{pw}x{ph}.png",
-                                        to_bytes(banner))
-                            if not preview_done:
-                                st.image(to_bytes(banner),caption=pname,use_container_width=True)
-                                preview_done=True
-                            prog.progress((i+1)/len(b_plats))
-                    prog.empty(); zbuf.seek(0)
-                    st.success(f"✅ {len(b_plats)} banners ready!")
-                    st.download_button("📥 Download ZIP",data=zbuf.getvalue(),
-                        file_name=f"{ai.get('package_name','banners')}_all_platforms.zip",
-                        mime="application/zip",use_container_width=True)
-                else:
-                    st.markdown('<div class="empty"><div class="ei">📦</div>'
-                                '<div class="et">Select platforms → Generate</div></div>',
-                                unsafe_allow_html=True)
+            sel=st.selectbox("Which flyer?",list(generated.keys()))
+            sel_plats=st.multiselect("Export for",list(PLATFORMS.keys()),
+                                      default=list(PLATFORMS.keys())[:5])
+            if st.button("📦 Generate ZIP",type="primary",
+                          use_container_width=True,disabled=not sel_plats):
+                src=Image.open(io.BytesIO(generated[sel])).convert("RGB")
+                zbuf=io.BytesIO()
+                prog=st.progress(0)
+                with zipfile.ZipFile(zbuf,"w",zipfile.ZIP_DEFLATED) as zf:
+                    for i,pname in enumerate(sel_plats):
+                        W2,H2=PLATFORMS[pname]
+                        resized=src.resize((W2,H2),Image.LANCZOS)
+                        safe=re.sub(r"[^\w]","_",pname)[:30]
+                        zf.writestr(f"{sel}_flyer_{safe}_{W2}x{H2}.jpg",
+                                    to_bytes(resized,"JPEG",93))
+                        prog.progress((i+1)/len(sel_plats))
+                prog.empty(); zbuf.seek(0)
+                st.success(f"✅ {len(sel_plats)} sizes ready!")
+                st.download_button("📥 Download ZIP",data=zbuf.getvalue(),
+                    file_name=f"{sel}_flyer_all_platforms.zip",
+                    mime="application/zip",use_container_width=True)
 
     st.markdown("---")
-    with st.expander("💡 Tips for best results"):
+    with st.expander("💡 Tips for best flyers"):
         st.markdown("""
-**One-line description tips:**
-> *7 day Kerala backwaters with houseboat, Munnar tea gardens, elephant sanctuary, Varkala beach, 3-star hotels, ₹28,000/person, couple package*
+**Package Flyer (Bhutan style):**
+- Upload 3 photos: wide landscape, monastery/temple, mountain/nature
+- Prompt: include city-wise nights breakdown, exact price, inclusions
+- Example: *"Bhutan 6 days 5 nights, Rs 28777, Thimphu 2N + Punakha 1N + Paro 2N, twin sharing, breakfast dinner, Toyota, 4 guests min"*
 
-Include: destination, duration, key activities, hotels, price, package type (couple/family/adventure)
+**Service Flyer (Gateway style):**
+- Upload 1 wide photo with world landmarks or maps
+- Prompt: list all your services
+- Example: *"Visa for all countries — tourist, business, corporate. Also tour packages, hotels, euro rail, flight bookings"*
+
+**Promo Flyer (Adventure style):**
+- Upload 1 bold hero photo + 2-3 smaller activity photos
+- Prompt: include the offer, price, urgency
+- Example: *"Summer Europe special — 10 nights Rs 89,999 per person, flights hotels visa, limited seats, book before June 30"*
 
 **Photo tips:**
-- Upload 3-5 photos — AI picks the best layout automatically
-- Mix: 1 landscape + 1-2 activity shots + 1 cultural/food shot
-- Minimum 1500px wide for crisp 2× supersampled output
-- Golden hour shots look best with warm themes
-
-**Theme guide:**
-| Destination | Best Theme |
-|---|---|
-| Rajasthan / Gujarat | Golden Hour or Desert Sand |
-| Goa / Kerala / Andaman | Deep Ocean |
-| Luxury / Premium | Dark Luxury |
-| Himachal / Coorg / Munnar | Emerald |
-| Honeymoon | Rose Blush |
-| Adventure / Trekking | Coral Sunset |
-| City / Night | Midnight Blue |
-
-**Free music for MP4 Reels:**
-- [YouTube Audio Library](https://studio.youtube.com/channel/music) — 100% free, no copyright
-- [Pixabay Music](https://pixabay.com/music/) — free for commercial use
-- [Mixkit](https://mixkit.co/free-stock-music/) — great for travel content
+- Minimum 1200px wide for crisp output (2× supersampling renders at 2400px)
+- Landscape orientation works best for hero photos
+- Portrait-oriented temple/monument shots work well in the 3-tile mosaic
         """)
