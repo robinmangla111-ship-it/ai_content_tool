@@ -552,7 +552,7 @@ def _draw_hotel_cards(slide, itinerary, t, start_y, width):
                            font_size=14, bold=True,
                            color_hex="000000")
 
-        _add_text(slide, city.upper(),
+        _add_text(slide, str(city).upper(),
                   0.9, CUR_Y+0.14, 2.4, 0.3,
                   font_size=12, bold=True,
                   color_hex=t["primary"])
