@@ -364,73 +364,113 @@ def get_font(size: int, bold: bool = False):
         return ImageFont.load_default()
 
 
-def render_slide_pil(slide_data: Dict, bg_image: Optional[Image.Image], theme: Dict, slide_num: int, total: int) -> Image.Image:
-    bg = make_gradient(tuple(theme["gradient_start"]), tuple(theme["gradient_end"]))
+def render_slide_pil(slide_data, bg_image, theme, slide_num, total):
+    W, H = 1920, 1080
 
+    # Base background gradient
+    bg = make_gradient(tuple(theme["gradient_start"]), tuple(theme["gradient_end"]), W, H).convert("RGB")
+
+    # Background image blend
     if bg_image:
         try:
             bgi = bg_image.convert("RGB").resize((W, H), Image.LANCZOS)
+            bgi = ImageEnhance.Contrast(bgi).enhance(1.2)
             bgi = ImageEnhance.Brightness(bgi).enhance(0.55)
-            bg = Image.blend(bg, bgi, alpha=0.65)
-        except Exception:
+            bg = Image.blend(bg, bgi, alpha=0.75)
+        except:
             pass
 
+    bg = bg.convert("RGBA")
     draw = ImageDraw.Draw(bg)
 
-    f_heading = get_font(64, bold=True)
-    f_body = get_font(42)
-    f_small = get_font(28)
-
+    # Theme colors
     tc = tuple(theme["text_color"])
     ac = tuple(theme["accent_color"])
     hc = tuple(theme["heading_color"])
 
-    # top counter
-    draw.text((W - 170, 40), f"{slide_num}/{total}", font=f_small, fill=ac)
+    # Fonts
+    f_heading = get_font(74, bold=True)
+    f_body    = get_font(40)
+    f_small   = get_font(28)
+    f_tag     = get_font(32, bold=True)
 
-    # heading
-    y = 120
-    head_lines = wrap_text(slide_data.get("heading", ""), f_heading, W - 160, draw)
-    for ln in head_lines[:3]:
-        draw.text((82, y + 3), ln, font=f_heading, fill=(0, 0, 0))
-        draw.text((80, y), ln, font=f_heading, fill=hc)
-        y += 78
+    # Blur overlay for glassmorphism
+    glass = bg.filter(ImageFilter.GaussianBlur(12))
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
 
-    # separator
-    y += 10
-    draw.rectangle([80, y, 420, y + 6], fill=ac)
-    y += 40
+    # Glass card area (center-left)
+    card_x1, card_y1 = 90, 140
+    card_x2, card_y2 = 1500, 920
 
-    # content
+    card = glass.crop((card_x1, card_y1, card_x2, card_y2))
+    overlay.paste(card, (card_x1, card_y1))
+
+    # Add semi-transparent dark tint
+    tint = Image.new("RGBA", (card_x2-card_x1, card_y2-card_y1), (0, 0, 0, 140))
+    overlay.paste(tint, (card_x1, card_y1), tint)
+
+    bg = Image.alpha_composite(bg, overlay)
+    draw = ImageDraw.Draw(bg)
+
+    # Rounded border effect (fake glow)
+    draw.rounded_rectangle(
+        [card_x1, card_y1, card_x2, card_y2],
+        radius=28,
+        outline=(*ac, 160),
+        width=4
+    )
+
+    # Top tag
+    tag_text = f"SLIDE {slide_num}/{total}"
+    draw.rounded_rectangle([card_x1+30, card_y1+25, card_x1+290, card_y1+80], radius=20, fill=(*ac, 255))
+    draw.text((card_x1+50, card_y1+33), tag_text, font=f_small, fill=(0, 0, 0))
+
+    # Heading
+    heading = slide_data.get("heading", "")
+    head_lines = wrap_text(heading, f_heading, card_x2-card_x1-120, draw)
+
+    y = card_y1 + 120
+    for line in head_lines[:2]:
+        draw.text((card_x1+55, y), line, font=f_heading, fill=hc)
+        y += 92
+
+    # Accent underline
+    draw.rectangle([card_x1+55, y+10, card_x1+520, y+18], fill=(*ac, 255))
+    y += 50
+
+    # Content bullets
     content = slide_data.get("content", "")
-    lines = content.split("\n")
+    content_lines = content.split("\n")
 
-    for line in lines:
+    for line in content_lines:
         line = line.strip()
         if not line:
-            y += 18
+            y += 20
             continue
 
-        if line.startswith(("•", "-", "*")):
-            clean = line.lstrip("•-* ").strip()
-            draw.text((88, y), "▸", font=f_body, fill=ac)
-            x = 140
-        else:
-            clean = line
-            x = 80
+        clean = line.lstrip("•-* ").strip()
 
-        wrapped = wrap_text(clean, f_body, W - x - 90, draw)
+        # bullet icon
+        draw.text((card_x1+55, y), "✔", font=f_tag, fill=ac)
+
+        wrapped = wrap_text(clean, f_body, card_x2-card_x1-180, draw)
         for wl in wrapped:
-            draw.text((x + 2, y + 2), wl, font=f_body, fill=(0, 0, 0))
-            draw.text((x, y), wl, font=f_body, fill=tc)
-            y += 56
+            draw.text((card_x1+110, y), wl, font=f_body, fill=tc)
+            y += 58
 
-    # footer
-    draw.rectangle([0, H - 90, W, H], fill=(0, 0, 0))
-    draw.text((80, H - 65), "🏖️ Slider Content Creator", font=f_small, fill=ac)
+        y += 10
 
-    return bg
+        if y > card_y2 - 120:
+            break
 
+    # Bottom branding
+    draw.rectangle([0, H-85, W, H], fill=(0, 0, 0, 180))
+    draw.text((90, H-65), "🔥 AI Slider Content Creator", font=f_small, fill=(*ac, 220))
+
+    # Right side vertical glow bar
+    draw.rectangle([W-18, 0, W, H], fill=(*ac, 160))
+
+    return bg.convert("RGB")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # PPTX EXPORT
