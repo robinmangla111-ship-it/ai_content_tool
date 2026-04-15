@@ -804,7 +804,7 @@ def render_html_to_png(html: str, out_path: str) -> bool:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
+            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
             page = browser.new_page(viewport={"width": 1080, "height": 1920})
 
             page.set_content(html, wait_until="networkidle")
