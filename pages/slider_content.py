@@ -800,25 +800,25 @@ def build_slide_html(slide: Dict, bg_img_path: Optional[str] = None) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 def render_html_to_png(html: str, out_path: str) -> bool:
     if not PLAYWRIGHT_OK:
+        st.error("Playwright not installed.")
         return False
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True, args=["--no-sandbox"])
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage"]
+            )
             page = browser.new_page(viewport={"width": 1080, "height": 1920})
-
             page.set_content(html, wait_until="networkidle")
-            page.wait_for_timeout(1200)
-
+            page.wait_for_timeout(1500)
             page.screenshot(path=out_path, full_page=True)
             browser.close()
-
         return True
+
     except Exception as e:
         st.error(f"Playwright render failed: {e}")
         return False
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # PPTX EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
