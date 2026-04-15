@@ -292,20 +292,34 @@ Include at least 20 tags and 10 hashtags.
 # ─────────────────────────────────────────────────────────────────────────────
 # IMAGE GENERATION (HUGGING FACE)
 # ─────────────────────────────────────────────────────────────────────────────
-def generate_image_hf(prompt: str, hf_token: str, model_id: str) -> Optional[Image.Image]:
+def generate_image_hf(prompt: str, hf_token: str, model_id: str):
     if not HF_OK:
-        return None
-    try:
-        client = InferenceClient(token=hf_token)
-        enhanced = f"{prompt}, ultra detailed, 4k, cinematic lighting, sharp focus"
-        img = client.text_to_image(enhanced, model=model_id)
-        if isinstance(img, Image.Image):
-            return img
-        return Image.open(io.BytesIO(img))
-    except Exception as e:
-        st.warning(f"Image gen error: {e}")
+        st.error("huggingface_hub not installed.")
         return None
 
+    if not hf_token:
+        st.error("HuggingFace token missing.")
+        return None
+
+    try:
+        client = InferenceClient(token=hf_token)
+
+        enhanced = (
+            f"{prompt}, ultra realistic travel photography, cinematic lighting, "
+            f"high quality, 4k, professional DSLR, vibrant colors, sharp focus"
+        )
+
+        img = client.text_to_image(enhanced, model=model_id)
+
+        if isinstance(img, Image.Image):
+            return img
+
+        # if returned as bytes
+        return Image.open(io.BytesIO(img))
+
+    except Exception as e:
+        st.error(f"❌ HF Image generation failed for model `{model_id}`: {e}")
+        return None
 
 def generate_images_for_slide(prompt: str, count: int, hf_token: str, model_id: str) -> List[Image.Image]:
     imgs = []
@@ -365,113 +379,81 @@ def get_font(size: int, bold: bool = False):
 
 
 def render_slide_pil(slide_data, bg_image, theme, slide_num, total):
-    W, H = 1920, 1080
+    W, H = 1080, 1920   # SHORTS format (9:16)
 
-    # Base background gradient
-    bg = make_gradient(tuple(theme["gradient_start"]), tuple(theme["gradient_end"]), W, H).convert("RGB")
-
-    # Background image blend
+    # Background image full screen
     if bg_image:
-        try:
-            bgi = bg_image.convert("RGB").resize((W, H), Image.LANCZOS)
-            bgi = ImageEnhance.Contrast(bgi).enhance(1.2)
-            bgi = ImageEnhance.Brightness(bgi).enhance(0.55)
-            bg = Image.blend(bg, bgi, alpha=0.75)
-        except:
-            pass
+        bg = bg_image.convert("RGB").resize((W, H), Image.LANCZOS)
+    else:
+        bg = make_gradient((10, 10, 20), (0, 0, 0), W, H).convert("RGB")
 
+    bg = ImageEnhance.Contrast(bg).enhance(1.15)
+    bg = ImageEnhance.Brightness(bg).enhance(0.85)
     bg = bg.convert("RGBA")
+
     draw = ImageDraw.Draw(bg)
 
-    # Theme colors
-    tc = tuple(theme["text_color"])
-    ac = tuple(theme["accent_color"])
-    hc = tuple(theme["heading_color"])
-
-    # Fonts
-    f_heading = get_font(74, bold=True)
-    f_body    = get_font(40)
-    f_small   = get_font(28)
-    f_tag     = get_font(32, bold=True)
-
-    # Blur overlay for glassmorphism
-    glass = bg.filter(ImageFilter.GaussianBlur(12))
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-
-    # Glass card area (center-left)
-    card_x1, card_y1 = 90, 140
-    card_x2, card_y2 = 1500, 920
-
-    card = glass.crop((card_x1, card_y1, card_x2, card_y2))
-    overlay.paste(card, (card_x1, card_y1))
-
-    # Add semi-transparent dark tint
-    tint = Image.new("RGBA", (card_x2-card_x1, card_y2-card_y1), (0, 0, 0, 140))
-    overlay.paste(tint, (card_x1, card_y1), tint)
-
+    # Dark overlay (cinematic)
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 90))
     bg = Image.alpha_composite(bg, overlay)
     draw = ImageDraw.Draw(bg)
 
-    # Rounded border effect (fake glow)
-    draw.rounded_rectangle(
-        [card_x1, card_y1, card_x2, card_y2],
-        radius=28,
-        outline=(*ac, 160),
-        width=4
-    )
+    # Fonts
+    f_title = get_font(78, bold=True)
+    f_body  = get_font(46)
+    f_tag   = get_font(42, bold=True)
+    f_small = get_font(36)
 
-    # Top tag
-    tag_text = f"SLIDE {slide_num}/{total}"
-    draw.rounded_rectangle([card_x1+30, card_y1+25, card_x1+290, card_y1+80], radius=20, fill=(*ac, 255))
-    draw.text((card_x1+50, card_y1+33), tag_text, font=f_small, fill=(0, 0, 0))
+    # Colors
+    tc = (255, 255, 255)
+    ac = (255, 165, 0)
 
-    # Heading
-    heading = slide_data.get("heading", "")
-    head_lines = wrap_text(heading, f_heading, card_x2-card_x1-120, draw)
+    # Location Tag (top left)
+    loc = slide_data.get("heading", "Dream Destination").upper()
+    draw.rounded_rectangle([60, 70, 820, 150], radius=30, fill=(0, 0, 0, 150))
+    draw.text((90, 85), f"📍 {loc[:22]}", font=f_tag, fill=ac)
 
-    y = card_y1 + 120
-    for line in head_lines[:2]:
-        draw.text((card_x1+55, y), line, font=f_heading, fill=hc)
-        y += 92
+    # Big Title center
+    title = slide_data.get("content", "").split("\n")[0]
+    title_lines = wrap_text(title, f_title, 900, draw)
 
-    # Accent underline
-    draw.rectangle([card_x1+55, y+10, card_x1+520, y+18], fill=(*ac, 255))
-    y += 50
+    y = 300
+    for line in title_lines[:3]:
+        draw.text((70, y), line, font=f_title, fill=tc)
+        y += 95
 
-    # Content bullets
-    content = slide_data.get("content", "")
-    content_lines = content.split("\n")
+    # Package Highlights box (bottom)
+    box_y1 = 1150
+    draw.rounded_rectangle([50, box_y1, 1030, 1780], radius=40, fill=(0, 0, 0, 160))
 
-    for line in content_lines:
+    # bullet highlights
+    content_lines = slide_data.get("content", "").split("\n")[1:]
+    y = box_y1 + 60
+
+    for line in content_lines[:5]:
         line = line.strip()
         if not line:
-            y += 20
             continue
-
         clean = line.lstrip("•-* ").strip()
-
-        # bullet icon
-        draw.text((card_x1+55, y), "✔", font=f_tag, fill=ac)
-
-        wrapped = wrap_text(clean, f_body, card_x2-card_x1-180, draw)
-        for wl in wrapped:
-            draw.text((card_x1+110, y), wl, font=f_body, fill=tc)
-            y += 58
-
+        draw.text((90, y), "✔", font=f_body, fill=ac)
+        wrapped = wrap_text(clean, f_body, 850, draw)
+        for wl in wrapped[:2]:
+            draw.text((150, y), wl, font=f_body, fill=tc)
+            y += 65
         y += 10
 
-        if y > card_y2 - 120:
-            break
+    # Price badge (bottom right)
+    draw.rounded_rectangle([640, 1600, 1020, 1735], radius=35, fill=(255, 165, 0, 255))
+    draw.text((670, 1625), "₹ 9,999*", font=f_tag, fill=(0, 0, 0))
 
-    # Bottom branding
-    draw.rectangle([0, H-85, W, H], fill=(0, 0, 0, 180))
-    draw.text((90, H-65), "🔥 AI Slider Content Creator", font=f_small, fill=(*ac, 220))
+    # CTA button
+    draw.rounded_rectangle([70, 1600, 610, 1735], radius=35, fill=(255, 255, 255, 255))
+    draw.text((110, 1625), "📲 BOOK NOW", font=f_tag, fill=(0, 0, 0))
 
-    # Right side vertical glow bar
-    draw.rectangle([W-18, 0, W, H], fill=(*ac, 160))
+    # Footer branding
+    draw.text((70, 1830), f"Slide {slide_num}/{total} • Travel Packages", font=f_small, fill=(255, 255, 255, 160))
 
     return bg.convert("RGB")
-
 # ─────────────────────────────────────────────────────────────────────────────
 # PPTX EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
