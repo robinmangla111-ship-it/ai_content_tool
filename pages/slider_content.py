@@ -66,6 +66,19 @@ def load_config():
 CFG = load_config()
 
 
+def get_env_key(name: str) -> str:
+    return os.getenv(name, "").strip()
+
+# Auto load from Streamlit secrets / env
+if not st.session_state.get("groq_api_key"):
+    st.session_state.groq_api_key = get_env_key("GROQ_API_KEY")
+
+if not st.session_state.get("hf_token"):
+    st.session_state.hf_token = get_env_key("HF_TOKEN")
+
+if not st.session_state.get("openai_api_key"):
+    st.session_state.openai_api_key = get_env_key("OPENAI_API_KEY")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # CUSTOM CSS
 # ─────────────────────────────────────────────────────────────────────────────
@@ -144,9 +157,9 @@ def init_state():
         "video_path": None,
         "pptx_path": None,
         "youtube_meta": None,
-        "groq_api_key": "",
-        "hf_token": "",
-        "openai_api_key": "",
+        "groq_api_key": os.getenv("GROQ_API_KEY", ""),
+        "hf_token": os.getenv("HF_TOKEN", ""),
+        "openai_api_key": os.getenv("OPENAI_API_KEY", ""),
         "slide_imgs": None,
         "selected_groq_model": None,
     }
