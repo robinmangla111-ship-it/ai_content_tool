@@ -428,171 +428,146 @@ def get_font(size: int, bold: bool = False):
         return ImageFont.load_default()
 
 def render_slide_pil(slide_data, bg_image, theme, slide_num, total):
-    W, H = 1080, 1920  # Shorts/Reels format
+    W, H = 1080, 1920
 
-    # Background
+    # ---- Background ----
     if bg_image:
         bg = bg_image.convert("RGB").resize((W, H), Image.LANCZOS)
     else:
         bg = make_gradient(tuple(theme["gradient_start"]), tuple(theme["gradient_end"]), W, H)
 
-    bg = ImageEnhance.Contrast(bg).enhance(1.15)
+    bg = ImageEnhance.Contrast(bg).enhance(1.2)
     bg = ImageEnhance.Brightness(bg).enhance(0.85)
     bg = bg.convert("RGBA")
 
     draw = ImageDraw.Draw(bg)
 
-    tc = (255, 255, 255)
-    ac = tuple(theme["accent_color"])
+    # ---- Overlay Blur + Dark Tint ----
+    blur_bg = bg.filter(ImageFilter.GaussianBlur(12))
+    bg = Image.blend(bg, blur_bg, alpha=0.35)
 
-    f_heading = get_font(86, bold=True)
-    f_body    = get_font(46)
-    f_small   = get_font(34)
-    f_badge   = get_font(40, bold=True)
-
-    # Overlay cinematic tint
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 90))
+    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 120))
     bg = Image.alpha_composite(bg, overlay)
+
     draw = ImageDraw.Draw(bg)
 
-    # Layout selection (AI layout_type OR auto random)
-    layout = slide_data.get("layout_type", "").strip()
-    if not layout:
-        layout = random.choice(["bottom_card", "split_left", "hero_center", "minimal_quote"])
-
+    # ---- Slide Data ----
     heading = slide_data.get("heading", "")
     content = slide_data.get("content", "")
     highlight = slide_data.get("highlight", "")
     cta = slide_data.get("cta", "")
     badges = slide_data.get("badges", [])
 
-    # --- Badge Drawer ---
-    def draw_badge(x, y, text, fill=(0,0,0,160), text_color=(255,255,255)):
-        w = draw.textbbox((0,0), text, font=f_badge)[2] + 60
-        draw.rounded_rectangle([x, y, x+w, y+70], radius=30, fill=fill)
-        draw.text((x+30, y+12), text, font=f_badge, fill=text_color)
+    design = slide_data.get("design", {})
 
-    # --- CTA Button ---
-    def draw_cta(x, y, text):
-        draw.rounded_rectangle([x, y, x+420, y+90], radius=35, fill=(*ac, 255))
-        draw.text((x+60, y+18), text, font=f_badge, fill=(0,0,0))
+    # ---- AI Layout Defaults ----
+    layout = design.get("layout", random.choice(["hero", "glass_card", "magazine", "split"]))
+    overlay_opacity = float(design.get("overlay_opacity", 0.45))
+    heading_size = int(design.get("heading_size", 90))
+    content_size = int(design.get("content_size", 48))
+    text_align = design.get("text_align", "left")
 
-    # ===============================
-    # Layout 1: Bottom Card (Travel)
-    # ===============================
-    if layout == "bottom_card":
-        # Top heading
-        head_lines = wrap_text(heading, f_heading, 950, draw)
-        y = 140
-        for line in head_lines[:2]:
-            draw.text((70, y), line, font=f_heading, fill=tc)
-            y += 105
+    ac = tuple(theme["accent_color"])
+    tc = (255, 255, 255)
 
-        # Glass bottom panel
-        panel_y1 = 980
-        panel = bg.filter(ImageFilter.GaussianBlur(10))
-        crop = panel.crop((50, panel_y1, W-50, H-120))
-        bg.paste(crop, (50, panel_y1))
+    f_heading = get_font(heading_size, bold=True)
+    f_body = get_font(content_size)
+    f_small = get_font(34)
+    f_badge = get_font(40, bold=True)
 
-        draw.rounded_rectangle([50, panel_y1, W-50, H-120], radius=50, outline=(*ac, 170), width=4)
-        draw.rectangle([50, panel_y1, W-50, H-120], fill=(0,0,0,110))
+    # ---- Accent Glow Line ----
+    glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rectangle([60, 130, 75, H - 140], fill=(*ac, 220))
+    glow = glow.filter(ImageFilter.GaussianBlur(8))
+    bg = Image.alpha_composite(bg, glow)
+    draw = ImageDraw.Draw(bg)
 
-        # Content bullets
-        y = panel_y1 + 60
-        lines = content.split("\n")
-        for ln in lines[:6]:
-            ln = ln.strip()
-            if not ln:
-                continue
-            clean = ln.lstrip("•-* ").strip()
-            draw.text((90, y), "✔", font=f_body, fill=ac)
-            wrapped = wrap_text(clean, f_body, 820, draw)
-            for wl in wrapped[:2]:
-                draw.text((150, y), wl, font=f_body, fill=tc)
-                y += 65
-            y += 10
+    # ---- Highlight Badge ----
+    if highlight:
+        bbox = draw.textbbox((0, 0), highlight, font=f_badge)
+        bw = bbox[2] - bbox[0] + 80
+        draw.rounded_rectangle([60, 70, 60 + bw, 150], radius=40, fill=(*ac, 255))
+        draw.text((95, 85), highlight, font=f_badge, fill=(0, 0, 0))
 
-        if cta:
-            draw_cta(90, H-240, cta)
+    # ---- Heading Placement ----
+    head_lines = wrap_text(heading, f_heading, 950, draw)
+    y = 200
+    for line in head_lines[:3]:
+        if text_align == "center":
+            w = draw.textbbox((0, 0), line, font=f_heading)[2]
+            x = (W - w) // 2
+        else:
+            x = 80
 
-        if highlight:
-            draw_badge(70, 70, highlight, fill=(*ac, 220), text_color=(0,0,0))
+        draw.text((x + 4, y + 4), line, font=f_heading, fill=(0, 0, 0, 180))
+        draw.text((x, y), line, font=f_heading, fill=tc)
+        y += heading_size + 18
 
-    # ===============================
-    # Layout 2: Split Left Text
-    # ===============================
-    elif layout == "split_left":
-        draw.rectangle([0, 0, 620, H], fill=(0,0,0,140))
+    # ---- Glass Card ----
+    card_y = 1050 if layout in ["glass_card", "hero"] else 900
+    card_h = 650 if layout in ["glass_card", "hero"] else 800
 
-        head_lines = wrap_text(heading, f_heading, 520, draw)
-        y = 180
-        for line in head_lines[:3]:
-            draw.text((60, y), line, font=f_heading, fill=tc)
-            y += 100
+    glass = bg.filter(ImageFilter.GaussianBlur(18)).crop((50, card_y, W - 50, card_y + card_h))
+    bg.paste(glass, (50, card_y))
 
-        y += 30
-        for ln in content.split("\n")[:7]:
-            ln = ln.strip()
-            if not ln:
-                continue
-            clean = ln.lstrip("•-* ").strip()
-            wrapped = wrap_text(clean, f_body, 520, draw)
-            for wl in wrapped[:2]:
-                draw.text((80, y), wl, font=f_body, fill=(255,255,255,220))
-                y += 62
-            y += 10
+    draw.rounded_rectangle(
+        [50, card_y, W - 50, card_y + card_h],
+        radius=55,
+        outline=(*ac, 160),
+        width=4,
+    )
+    draw.rounded_rectangle(
+        [50, card_y, W - 50, card_y + card_h],
+        radius=55,
+        fill=(0, 0, 0, int(160 * overlay_opacity)),
+    )
 
-        if cta:
-            draw_cta(80, H-220, cta)
+    # ---- Content Bullets ----
+    y = card_y + 70
+    for ln in content.split("\n")[:7]:
+        ln = ln.strip()
+        if not ln:
+            continue
 
-    # ===============================
-    # Layout 3: Hero Center
-    # ===============================
-    elif layout == "hero_center":
-        draw.rectangle([0, 0, W, H], fill=(0,0,0,70))
+        clean = ln.lstrip("•-* ").strip()
+        draw.text((90, y), "➤", font=f_body, fill=ac)
 
-        head_lines = wrap_text(heading, f_heading, 900, draw)
-        y = 520
-        for line in head_lines[:3]:
-            draw.text((70, y), line, font=f_heading, fill=tc)
-            y += 110
+        wrapped = wrap_text(clean, f_body, 820, draw)
+        for wl in wrapped[:2]:
+            draw.text((150 + 2, y + 2), wl, font=f_body, fill=(0, 0, 0, 120))
+            draw.text((150, y), wl, font=f_body, fill=(255, 255, 255, 235))
+            y += content_size + 18
+        y += 10
 
-        if highlight:
-            draw_badge(70, 170, highlight, fill=(*ac, 255), text_color=(0,0,0))
-
-        if cta:
-            draw_cta(70, H-250, cta)
-
-    # ===============================
-    # Layout 4: Minimal Quote
-    # ===============================
-    else:
-        draw.rectangle([0, 0, W, H], fill=(0,0,0,150))
-
-        quote = content.replace("\n", " ")
-        quote_lines = wrap_text(quote, f_heading, 950, draw)
-
-        y = 500
-        for line in quote_lines[:4]:
-            draw.text((70, y), line, font=f_heading, fill=tc)
-            y += 110
-
-        if heading:
-            draw.text((70, 380), heading.upper(), font=f_small, fill=(*ac, 220))
-
-    # --- Badges row (bottom)
+    # ---- Badges Row ----
     if badges:
-        bx = 70
-        by = H - 340
+        bx = 80
+        by = card_y - 90
         for b in badges[:3]:
-            draw_badge(bx, by, str(b), fill=(0,0,0,150))
-            bx += 320
+            txt = str(b)
+            bb = draw.textbbox((0, 0), txt, font=f_small)
+            bw = bb[2] - bb[0] + 60
+            draw.rounded_rectangle([bx, by, bx + bw, by + 70], radius=30, fill=(0, 0, 0, 150))
+            draw.text((bx + 30, by + 18), txt, font=f_small, fill=(*ac, 220))
+            bx += bw + 20
 
-    # Footer branding
-    draw.text((70, H-80), f"{slide_num}/{total}  •  Travel Shorts", font=f_small, fill=(255,255,255,150))
+    # ---- CTA Button ----
+    if cta:
+        cta_w = 520
+        cta_h = 100
+        cx = (W - cta_w) // 2
+        cy = H - 180
+
+        draw.rounded_rectangle([cx, cy, cx + cta_w, cy + cta_h], radius=45, fill=(*ac, 255))
+        tw = draw.textbbox((0, 0), cta, font=f_badge)[2]
+        draw.text((cx + (cta_w - tw) // 2, cy + 22), cta, font=f_badge, fill=(0, 0, 0))
+
+    # ---- Footer ----
+    footer = f"{slide_num}/{total}  •  {slide_data.get('category','Shorts')}"
+    draw.text((70, H - 70), footer, font=f_small, fill=(255, 255, 255, 150))
 
     return bg.convert("RGB")
-
 # ─────────────────────────────────────────────────────────────────────────────
 # PPTX EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
