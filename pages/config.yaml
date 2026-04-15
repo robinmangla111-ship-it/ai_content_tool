@@ -1,0 +1,133 @@
+app:
+  title: "🎬 YouTube Slide Video Creator"
+  version: "1.0.0"
+  max_slides: 10
+  default_slides: 5
+  video_resolution: [1920, 1080]
+  slide_duration: 5  # seconds per slide (default)
+
+languages:
+  English:
+    code: "en"
+    gtts_code: "en"
+    label: "English"
+  Hindi:
+    code: "hi"
+    gtts_code: "hi"
+    label: "हिंदी"
+  Hinglish:
+    code: "hi"
+    gtts_code: "hi"
+    label: "Hinglish (हिं + Eng)"
+
+groq:
+  default_model: "llama3-8b-8192"
+  models:
+    - "llama3-8b-8192"
+    - "llama3-70b-8192"
+    - "mixtral-8x7b-32768"
+    - "gemma2-9b-it"
+
+huggingface:
+  image_models:
+    - id: "stabilityai/stable-diffusion-xl-base-1.0"
+      label: "SDXL Base (Best Quality)"
+    - id: "runwayml/stable-diffusion-v1-5"
+      label: "SD 1.5 (Faster)"
+    - id: "stabilityai/stable-diffusion-2-1"
+      label: "SD 2.1 (Balanced)"
+  default_model: "stabilityai/stable-diffusion-xl-base-1.0"
+
+themes:
+  Cinematic Dark:
+    bg_color: [15, 15, 25]
+    text_color: [255, 255, 255]
+    accent_color: [255, 165, 0]
+    heading_color: [255, 200, 50]
+    overlay_opacity: 0.7
+    gradient_start: [15, 15, 25]
+    gradient_end: [40, 20, 60]
+    pptx_bg: "0F0F19"
+    pptx_text: "FFFFFF"
+    pptx_accent: "FFA500"
+
+  Vibrant Gradient:
+    bg_color: [20, 30, 80]
+    text_color: [255, 255, 255]
+    accent_color: [0, 230, 180]
+    heading_color: [100, 220, 255]
+    overlay_opacity: 0.6
+    gradient_start: [20, 30, 80]
+    gradient_end: [80, 20, 120]
+    pptx_bg: "141E50"
+    pptx_text: "FFFFFF"
+    pptx_accent: "00E6B4"
+
+  Clean White:
+    bg_color: [250, 250, 255]
+    text_color: [30, 30, 50]
+    accent_color: [70, 100, 255]
+    heading_color: [20, 60, 200]
+    overlay_opacity: 0.3
+    gradient_start: [250, 250, 255]
+    gradient_end: [220, 230, 255]
+    pptx_bg: "FAFAFF"
+    pptx_text: "1E1E32"
+    pptx_accent: "4664FF"
+
+  Saffron Energy:
+    bg_color: [255, 100, 0]
+    text_color: [255, 255, 255]
+    accent_color: [255, 220, 0]
+    heading_color: [255, 240, 100]
+    overlay_opacity: 0.65
+    gradient_start: [200, 60, 0]
+    gradient_end: [255, 140, 0]
+    pptx_bg: "FF6400"
+    pptx_text: "FFFFFF"
+    pptx_accent: "FFDC00"
+
+  Nature Green:
+    bg_color: [10, 60, 30]
+    text_color: [220, 255, 220]
+    accent_color: [80, 220, 120]
+    heading_color: [150, 255, 180]
+    overlay_opacity: 0.65
+    gradient_start: [10, 60, 30]
+    gradient_end: [20, 100, 50]
+    pptx_bg: "0A3C1E"
+    pptx_text: "DCFFDC"
+    pptx_accent: "50DC78"
+
+  Royal Purple:
+    bg_color: [40, 0, 80]
+    text_color: [240, 220, 255]
+    accent_color: [200, 100, 255]
+    heading_color: [220, 160, 255]
+    overlay_opacity: 0.65
+    gradient_start: [40, 0, 80]
+    gradient_end: [80, 20, 140]
+    pptx_bg: "280050"
+    pptx_text: "F0DCFF"
+    pptx_accent: "C864FF"
+
+fonts:
+  google_fonts:
+    - name: "NotoSansDevanagari"
+      url: "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Regular.ttf"
+      filename: "NotoSans-Regular.ttf"
+    - name: "NotoSansBold"
+      url: "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
+      filename: "NotoSans-Bold.ttf"
+
+youtube_categories:
+  - "Education"
+  - "Entertainment"
+  - "Science & Technology"
+  - "Howto & Style"
+  - "People & Blogs"
+  - "News & Politics"
+  - "Travel & Events"
+  - "Gaming"
+  - "Sports"
+  - "Music"
