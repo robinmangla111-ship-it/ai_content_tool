@@ -24,7 +24,7 @@ with st.sidebar:
     st.markdown("---")
     page = st.radio("NAVIGATION", [
         "🏠 Dashboard","✍️ Script Generator","🎯 Hook Builder",
-        "📅 Content Calendar","🎙️ Voice Studio","🏖️ Travel Content Creator","🏖️ Slider Content Creator"
+        "📅 Content Calendar","🎙️ Voice Studio","🏖️ Travel Content Creator","🏖️ Slider Content Creator",
         "🗣️ Voice Clone Setup","🎥 Avatar Video Guide",
         "📊 Analytics Tracker","⚙️ Settings",
     ], label_visibility="visible")
