@@ -12,6 +12,7 @@ import requests
 import yaml
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
+import random
 
 # PPTX
 from pptx import Presentation
@@ -200,35 +201,72 @@ def _safe_json_extract(raw: str) -> Dict:
     return json.loads(raw)
 
 
-def generate_slide_content(topic: str, language: str, num_slides: int, api_key: str, model: str) -> Optional[Dict]:
+def generate_slide_content(
+    topic: str,
+    language: str,
+    num_slides: int,
+    api_key: str,
+    model: str,
+    category: str = "General"
+) -> Optional[Dict]:
+
     if not GROQ_OK:
         st.error("Groq not installed.")
         return None
 
     lang_instr = LANG_PROMPTS.get(language, LANG_PROMPTS["English"])
 
+    CATEGORY_STYLE = {
+        "Travel": "Make it feel like a travel advertisement. Add offers, itinerary highlights, CTA like Book Now, and exciting tone.",
+        "Health": "Make it educational, safe, and practical. Include tips, do's/don'ts, and a short disclaimer if needed.",
+        "Devotion": "Make it spiritual, devotional, positive. Use Sanskrit/Hindi shlok tone where suitable. Add a devotional CTA like 'Jai Shree Ram'.",
+        "Motivation": "Make it punchy, inspiring, and reel-friendly. Use strong hooks and short lines.",
+        "Finance": "Make it informative, clear, actionable. Add warnings like 'Not financial advice'.",
+        "Education": "Make it structured and easy to learn. Use examples and simple explanation.",
+        "General": "Make it engaging and informative."
+    }
+
+    niche_instr = CATEGORY_STYLE.get(category, CATEGORY_STYLE["General"])
+
     prompt = f"""
 {lang_instr}
 
-Create Instagram slider content about: "{topic}"
+You are a professional social media content creator.
+
+Content Category: {category}
+Category Style Rules: {niche_instr}
+
+Create short-form slider/reel style content about: "{topic}"
 Generate exactly {num_slides} slides.
 
-Return ONLY VALID JSON.
-Do NOT use newline characters inside JSON strings.
-Use \\n for new lines inside content.
+Each slide should feel like a professional Instagram/Facebook/YouTube Shorts visual slide.
 
-Output format exactly:
+Return ONLY VALID JSON.
+Do NOT use raw newlines inside JSON strings.
+Use \\n inside "content" and "speaker_notes".
+
+Output format EXACTLY:
 
 {{
-  "title": "...",
-  "description_short": "...",
+  "title": "Viral SEO title",
+  "description_short": "1-line hook",
+  "category": "{category}",
+  "style": {{
+    "mood": "luxury / calm / devotional / energetic",
+    "palette": ["#hex1", "#hex2", "#hex3"],
+    "font_style": "modern / cinematic / minimal / bold"
+  }},
   "slides": [
     {{
       "slide_number": 1,
-      "heading": "...",
+      "layout_type": "bottom_card / split_left / hero_center / minimal_quote",
+      "heading": "Short punchy heading (max 8 words)",
       "content": "Line1\\nLine2\\nLine3",
-      "speaker_notes": "Line1\\nLine2",
-      "image_prompt": "..."
+      "highlight": "Short offer/highlight badge text (optional)",
+      "cta": "Short CTA like BOOK NOW / SAVE THIS / FOLLOW FOR MORE (optional)",
+      "badges": ["badge1","badge2","badge3"],
+      "speaker_notes": "Narration line1\\nNarration line2",
+      "image_prompt": "Always in English. Ultra realistic professional photography prompt."
     }}
   ]
 }}
@@ -248,7 +286,6 @@ Output format exactly:
     except Exception as e:
         st.error(f"Content generation failed: {e}")
         return None
-
 
 def generate_youtube_meta(slide_content: Dict, language: str, category: str, api_key: str, model: str) -> Optional[Dict]:
     if not GROQ_OK:
@@ -390,15 +427,14 @@ def get_font(size: int, bold: bool = False):
     except Exception:
         return ImageFont.load_default()
 
-
 def render_slide_pil(slide_data, bg_image, theme, slide_num, total):
-    W, H = 1080, 1920   # SHORTS format (9:16)
+    W, H = 1080, 1920  # Shorts/Reels format
 
-    # Background image full screen
+    # Background
     if bg_image:
         bg = bg_image.convert("RGB").resize((W, H), Image.LANCZOS)
     else:
-        bg = make_gradient((10, 10, 20), (0, 0, 0), W, H).convert("RGB")
+        bg = make_gradient(tuple(theme["gradient_start"]), tuple(theme["gradient_end"]), W, H)
 
     bg = ImageEnhance.Contrast(bg).enhance(1.15)
     bg = ImageEnhance.Brightness(bg).enhance(0.85)
@@ -406,67 +442,157 @@ def render_slide_pil(slide_data, bg_image, theme, slide_num, total):
 
     draw = ImageDraw.Draw(bg)
 
-    # Dark overlay (cinematic)
+    tc = (255, 255, 255)
+    ac = tuple(theme["accent_color"])
+
+    f_heading = get_font(86, bold=True)
+    f_body    = get_font(46)
+    f_small   = get_font(34)
+    f_badge   = get_font(40, bold=True)
+
+    # Overlay cinematic tint
     overlay = Image.new("RGBA", (W, H), (0, 0, 0, 90))
     bg = Image.alpha_composite(bg, overlay)
     draw = ImageDraw.Draw(bg)
 
-    # Fonts
-    f_title = get_font(78, bold=True)
-    f_body  = get_font(46)
-    f_tag   = get_font(42, bold=True)
-    f_small = get_font(36)
+    # Layout selection (AI layout_type OR auto random)
+    layout = slide_data.get("layout_type", "").strip()
+    if not layout:
+        layout = random.choice(["bottom_card", "split_left", "hero_center", "minimal_quote"])
 
-    # Colors
-    tc = (255, 255, 255)
-    ac = (255, 165, 0)
+    heading = slide_data.get("heading", "")
+    content = slide_data.get("content", "")
+    highlight = slide_data.get("highlight", "")
+    cta = slide_data.get("cta", "")
+    badges = slide_data.get("badges", [])
 
-    # Location Tag (top left)
-    loc = slide_data.get("heading", "Dream Destination").upper()
-    draw.rounded_rectangle([60, 70, 820, 150], radius=30, fill=(0, 0, 0, 150))
-    draw.text((90, 85), f"📍 {loc[:22]}", font=f_tag, fill=ac)
+    # --- Badge Drawer ---
+    def draw_badge(x, y, text, fill=(0,0,0,160), text_color=(255,255,255)):
+        w = draw.textbbox((0,0), text, font=f_badge)[2] + 60
+        draw.rounded_rectangle([x, y, x+w, y+70], radius=30, fill=fill)
+        draw.text((x+30, y+12), text, font=f_badge, fill=text_color)
 
-    # Big Title center
-    title = slide_data.get("content", "").split("\n")[0]
-    title_lines = wrap_text(title, f_title, 900, draw)
+    # --- CTA Button ---
+    def draw_cta(x, y, text):
+        draw.rounded_rectangle([x, y, x+420, y+90], radius=35, fill=(*ac, 255))
+        draw.text((x+60, y+18), text, font=f_badge, fill=(0,0,0))
 
-    y = 300
-    for line in title_lines[:3]:
-        draw.text((70, y), line, font=f_title, fill=tc)
-        y += 95
+    # ===============================
+    # Layout 1: Bottom Card (Travel)
+    # ===============================
+    if layout == "bottom_card":
+        # Top heading
+        head_lines = wrap_text(heading, f_heading, 950, draw)
+        y = 140
+        for line in head_lines[:2]:
+            draw.text((70, y), line, font=f_heading, fill=tc)
+            y += 105
 
-    # Package Highlights box (bottom)
-    box_y1 = 1150
-    draw.rounded_rectangle([50, box_y1, 1030, 1780], radius=40, fill=(0, 0, 0, 160))
+        # Glass bottom panel
+        panel_y1 = 980
+        panel = bg.filter(ImageFilter.GaussianBlur(10))
+        crop = panel.crop((50, panel_y1, W-50, H-120))
+        bg.paste(crop, (50, panel_y1))
 
-    # bullet highlights
-    content_lines = slide_data.get("content", "").split("\n")[1:]
-    y = box_y1 + 60
+        draw.rounded_rectangle([50, panel_y1, W-50, H-120], radius=50, outline=(*ac, 170), width=4)
+        draw.rectangle([50, panel_y1, W-50, H-120], fill=(0,0,0,110))
 
-    for line in content_lines[:5]:
-        line = line.strip()
-        if not line:
-            continue
-        clean = line.lstrip("•-* ").strip()
-        draw.text((90, y), "✔", font=f_body, fill=ac)
-        wrapped = wrap_text(clean, f_body, 850, draw)
-        for wl in wrapped[:2]:
-            draw.text((150, y), wl, font=f_body, fill=tc)
-            y += 65
-        y += 10
+        # Content bullets
+        y = panel_y1 + 60
+        lines = content.split("\n")
+        for ln in lines[:6]:
+            ln = ln.strip()
+            if not ln:
+                continue
+            clean = ln.lstrip("•-* ").strip()
+            draw.text((90, y), "✔", font=f_body, fill=ac)
+            wrapped = wrap_text(clean, f_body, 820, draw)
+            for wl in wrapped[:2]:
+                draw.text((150, y), wl, font=f_body, fill=tc)
+                y += 65
+            y += 10
 
-    # Price badge (bottom right)
-    draw.rounded_rectangle([640, 1600, 1020, 1735], radius=35, fill=(255, 165, 0, 255))
-    draw.text((670, 1625), "₹ 9,999*", font=f_tag, fill=(0, 0, 0))
+        if cta:
+            draw_cta(90, H-240, cta)
 
-    # CTA button
-    draw.rounded_rectangle([70, 1600, 610, 1735], radius=35, fill=(255, 255, 255, 255))
-    draw.text((110, 1625), "📲 BOOK NOW", font=f_tag, fill=(0, 0, 0))
+        if highlight:
+            draw_badge(70, 70, highlight, fill=(*ac, 220), text_color=(0,0,0))
+
+    # ===============================
+    # Layout 2: Split Left Text
+    # ===============================
+    elif layout == "split_left":
+        draw.rectangle([0, 0, 620, H], fill=(0,0,0,140))
+
+        head_lines = wrap_text(heading, f_heading, 520, draw)
+        y = 180
+        for line in head_lines[:3]:
+            draw.text((60, y), line, font=f_heading, fill=tc)
+            y += 100
+
+        y += 30
+        for ln in content.split("\n")[:7]:
+            ln = ln.strip()
+            if not ln:
+                continue
+            clean = ln.lstrip("•-* ").strip()
+            wrapped = wrap_text(clean, f_body, 520, draw)
+            for wl in wrapped[:2]:
+                draw.text((80, y), wl, font=f_body, fill=(255,255,255,220))
+                y += 62
+            y += 10
+
+        if cta:
+            draw_cta(80, H-220, cta)
+
+    # ===============================
+    # Layout 3: Hero Center
+    # ===============================
+    elif layout == "hero_center":
+        draw.rectangle([0, 0, W, H], fill=(0,0,0,70))
+
+        head_lines = wrap_text(heading, f_heading, 900, draw)
+        y = 520
+        for line in head_lines[:3]:
+            draw.text((70, y), line, font=f_heading, fill=tc)
+            y += 110
+
+        if highlight:
+            draw_badge(70, 170, highlight, fill=(*ac, 255), text_color=(0,0,0))
+
+        if cta:
+            draw_cta(70, H-250, cta)
+
+    # ===============================
+    # Layout 4: Minimal Quote
+    # ===============================
+    else:
+        draw.rectangle([0, 0, W, H], fill=(0,0,0,150))
+
+        quote = content.replace("\n", " ")
+        quote_lines = wrap_text(quote, f_heading, 950, draw)
+
+        y = 500
+        for line in quote_lines[:4]:
+            draw.text((70, y), line, font=f_heading, fill=tc)
+            y += 110
+
+        if heading:
+            draw.text((70, 380), heading.upper(), font=f_small, fill=(*ac, 220))
+
+    # --- Badges row (bottom)
+    if badges:
+        bx = 70
+        by = H - 340
+        for b in badges[:3]:
+            draw_badge(bx, by, str(b), fill=(0,0,0,150))
+            bx += 320
 
     # Footer branding
-    draw.text((70, 1830), f"Slide {slide_num}/{total} • Travel Packages", font=f_small, fill=(255, 255, 255, 160))
+    draw.text((70, H-80), f"{slide_num}/{total}  •  Travel Shorts", font=f_small, fill=(255,255,255,150))
 
     return bg.convert("RGB")
+
 # ─────────────────────────────────────────────────────────────────────────────
 # PPTX EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
@@ -678,6 +804,17 @@ def page_step1_setup():
             if CFG.get("languages") else 0,
             horizontal=True,
         )
+        # ✅ NEW: Content Type / Category
+        categories = CFG.get("content_categories", [
+            "General", "Travel", "Health", "Devotion", "Motivation", "Finance", "Education"
+        ])
+
+        st.session_state.content_category = st.selectbox(
+            "📌 Content Type",
+            options=categories,
+            index=categories.index(st.session_state.get("content_category", "General"))
+            if "General" in categories else 0
+        )
 
     with c2:
         st.session_state.num_slides = st.slider("📊 Number of Slides", 3, 10, st.session_state.num_slides)
@@ -708,7 +845,8 @@ def page_step1_setup():
                 st.session_state.language,
                 st.session_state.num_slides,
                 st.session_state.groq_api_key,
-                st.session_state.selected_groq_model
+                st.session_state.selected_groq_model,
+                st.session_state["content_category"]
             )
 
         if result:
