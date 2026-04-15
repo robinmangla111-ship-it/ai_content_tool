@@ -8,3 +8,11 @@ Pillow>=10.0.0
 huggingface_hub>=0.23.0
 python-pptx>=0.6.21
 lxml>=4.9.0
+
+# --- Video Export ---
+moviepy>=1.0.3
+imageio>=2.34.0
+imageio-ffmpeg>=0.4.9
+
+# --- Optional TTS ---
+gTTS>=2.5.1
