@@ -28,16 +28,14 @@ groq:
     - "llama-3.2-3b-preview"
     - "llama-3.2-11b-vision-preview"
     - "mixtral-8x7b-32768"
-
 huggingface:
   image_models:
-    - id: "stabilityai/stable-diffusion-xl-base-1.0"
-      label: "SDXL Base (Best Quality)"
-    - id: "runwayml/stable-diffusion-v1-5"
-      label: "SD 1.5 (Faster)"
     - id: "stabilityai/stable-diffusion-2-1"
-      label: "SD 2.1 (Balanced)"
-  default_model: "stabilityai/stable-diffusion-xl-base-1.0"
+      label: "Stable Diffusion 2.1 (Best Free Working)"
+    - id: "runwayml/stable-diffusion-v1-5"
+      label: "Stable Diffusion 1.5 (Fastest)"
+  default_model: "stabilityai/stable-diffusion-2-1"
+
 
 themes:
   Cinematic Dark:
