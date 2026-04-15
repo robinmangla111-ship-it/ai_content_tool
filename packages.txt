@@ -5,7 +5,6 @@ libxcomposite1
 libxdamage1
 libxrandr2
 libgbm1
-libasound2
 libpangocairo-1.0-0
 libpango-1.0-0
 libcairo2
@@ -15,4 +14,3 @@ libxext6
 libxfixes3
 libx11-6
 fonts-liberation
-ffmpeg
