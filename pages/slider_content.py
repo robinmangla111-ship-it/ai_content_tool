@@ -53,10 +53,13 @@ except ImportError:
 # ─────────────────────────────────────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────────────────────────────────────
-CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 @st.cache_resource
 def load_config():
+    if not CONFIG_PATH.exists():
+        st.error(f"❌ config.yaml not found at: {CONFIG_PATH}")
+        return {}
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
