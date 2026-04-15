@@ -21,12 +21,13 @@ languages:
     label: "Hinglish (हिं + Eng)"
 
 groq:
-  default_model: "llama3-8b-8192"
+  default_model: "llama-3.1-70b-versatile"
   models:
-    - "llama3-8b-8192"
-    - "llama3-70b-8192"
+    - "llama-3.1-8b-instant"
+    - "llama-3.1-70b-versatile"
+    - "llama-3.2-3b-preview"
+    - "llama-3.2-11b-vision-preview"
     - "mixtral-8x7b-32768"
-    - "gemma2-9b-it"
 
 huggingface:
   image_models:
