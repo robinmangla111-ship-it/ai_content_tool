@@ -28,13 +28,19 @@ groq:
     - "llama-3.2-3b-preview"
     - "llama-3.2-11b-vision-preview"
     - "mixtral-8x7b-32768"
+
 huggingface:
   image_models:
-    - id: "stabilityai/stable-diffusion-2-1"
-      label: "Stable Diffusion 2.1 (Best Free Working)"
+    - id: "stabilityai/stable-diffusion-xl-base-1.0"
+      label: "SDXL Base (May require Pro)"
     - id: "runwayml/stable-diffusion-v1-5"
-      label: "Stable Diffusion 1.5 (Fastest)"
-  default_model: "stabilityai/stable-diffusion-2-1"
+      label: "SD 1.5 (Usually Works)"
+    - id: "prompthero/openjourney"
+      label: "OpenJourney (Best Free Alternative)"
+    - id: "CompVis/stable-diffusion-v1-4"
+      label: "Stable Diffusion v1-4 (Old but works)"
+
+  default_model: "prompthero/openjourney"   
 
 
 themes:
