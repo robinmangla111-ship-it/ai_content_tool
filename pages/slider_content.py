@@ -167,11 +167,23 @@ LANG_PROMPTS = {
 
 def _safe_json_extract(raw: str) -> Dict:
     raw = raw.strip()
+
+    # Remove markdown fences
     raw = re.sub(r"^```json\s*", "", raw)
+    raw = re.sub(r"^```", "", raw)
     raw = re.sub(r"```$", "", raw).strip()
+
+    # Extract only JSON block
     m = re.search(r"\{.*\}", raw, re.DOTALL)
     if m:
-        return json.loads(m.group())
+        raw = m.group()
+
+    # Remove invalid control characters (important fix)
+    raw = re.sub(r"[\x00-\x1F\x7F]", "", raw)
+
+    # Fix smart quotes if model returns them
+    raw = raw.replace("“", '"').replace("”", '"').replace("’", "'")
+
     return json.loads(raw)
 
 
@@ -188,18 +200,22 @@ def generate_slide_content(topic: str, language: str, num_slides: int, api_key: 
 Create Instagram slider content about: "{topic}"
 Generate exactly {num_slides} slides.
 
-Return ONLY valid JSON (no markdown, no explanation):
+Return ONLY VALID JSON.
+Do NOT use newline characters inside JSON strings.
+Use \\n for new lines inside content.
+
+Output format exactly:
 
 {{
-  "title": "Slider Title",
-  "description_short": "One sentence hook",
+  "title": "...",
+  "description_short": "...",
   "slides": [
     {{
       "slide_number": 1,
-      "heading": "Short, punchy heading (max 8 words)",
-      "content": "3-5 bullet points or short paragraph",
-      "speaker_notes": "Narration text for voiceover (2-4 lines)",
-      "image_prompt": "English prompt for image generation: photorealistic, 8k, cinematic lighting"
+      "heading": "...",
+      "content": "Line1\\nLine2\\nLine3",
+      "speaker_notes": "Line1\\nLine2",
+      "image_prompt": "..."
     }}
   ]
 }}
