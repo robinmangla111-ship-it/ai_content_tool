@@ -14,6 +14,8 @@ import random
 import numpy as np
 from PIL import Image, ImageFilter
 
+import os
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = "0"
 # PPTX
 from pptx import Presentation
 from pptx.util import Inches
