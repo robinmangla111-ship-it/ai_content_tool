@@ -6,16 +6,17 @@ Uses Tailwind HTML + Playwright screenshot for Canva-like design
 """
 
 import streamlit as st
-import os, json, re, io, time, tempfile, zipfile
+import os, json, re, io, tempfile, zipfile
 from pathlib import Path
 from typing import Optional, List, Dict
 import yaml
-import requests
+import random
+import numpy as np
+from PIL import Image, ImageFilter
 
 # PPTX
 from pptx import Presentation
-from pptx.util import Inches, Pt
-from pptx.dml.color import RGBColor
+from pptx.util import Inches
 
 # Optional imports
 try:
@@ -31,22 +32,13 @@ except ImportError:
     HF_OK = False
 
 try:
-    from moviepy.editor import ImageClip, AudioFileClip, concatenate_videoclips
+    from moviepy.editor import (
+        ImageClip, concatenate_videoclips, vfx,
+        AudioFileClip
+    )
     MOVIEPY_OK = True
 except ImportError:
     MOVIEPY_OK = False
-
-try:
-    from gtts import gTTS
-    GTTS_OK = True
-except ImportError:
-    GTTS_OK = False
-
-try:
-    from openai import OpenAI
-    OPENAI_OK = True
-except ImportError:
-    OPENAI_OK = False
 
 try:
     from playwright.sync_api import sync_playwright
@@ -85,20 +77,12 @@ def init_state():
         "content_category": "Travel",
         "num_slides": 5,
         "slide_content": None,
-        "generated_images": {},
-        "selected_images": {},
-        "theme": "Luxury Travel",
-        "slide_duration": 5,
-        "add_audio": False,
-        "audio_src": "gTTS (Free)",
-        "video_path": None,
-        "pptx_path": None,
         "youtube_meta": None,
-        "slide_imgs": None,
         "groq_api_key": get_env_key("GROQ_API_KEY"),
         "hf_token": get_env_key("HF_TOKEN"),
-        "openai_api_key": get_env_key("OPENAI_API_KEY"),
         "selected_groq_model": None,
+        "png_paths": [],
+        "video_path": None,
     }
 
     for k, v in defaults.items():
@@ -113,6 +97,7 @@ def inject_css():
     st.markdown("""
     <style>
     @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800&family=Noto+Sans:wght@400;700;800&display=swap');
+
     html, body, [class*="css"] {
         font-family: 'Montserrat', 'Noto Sans', sans-serif;
     }
@@ -161,7 +146,7 @@ def inject_css():
     """, unsafe_allow_html=True)
 
 
-def progress_bar(current: int, total: int = 6):
+def progress_bar(current: int, total: int = 5):
     bars = ""
     for i in range(1, total + 1):
         cls = "done" if i < current else ("active" if i == current else "")
@@ -243,8 +228,7 @@ STRICT RULES:
 - Do NOT include English unless language=English.
 - Do NOT use raw newlines inside JSON strings.
 - Use \\n inside content and speaker_notes.
-
-Only image_prompt MUST be in English.
+- Only image_prompt MUST be in English.
 
 Return ONLY VALID JSON:
 
@@ -264,7 +248,7 @@ Return ONLY VALID JSON:
       "speaker_notes": "Line1\\nLine2",
       "image_prompt": "English cinematic photo prompt",
       "design": {{
-        "template": "luxury_offer / itinerary / minimal_quote / bold_typography / split_modern",
+        "template": "luxury_offer / itinerary / minimal_quote / bold_typography / split_modern / price_focus / comparison / checklist_card / devotional_glow / health_tip",
         "accent": "gold / pink / blue / green / red",
         "text_align": "left/center"
       }}
@@ -289,9 +273,6 @@ Return ONLY VALID JSON:
         return None
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# YOUTUBE META
-# ─────────────────────────────────────────────────────────────────────────────
 def generate_youtube_meta(slide_content: Dict, language: str, category: str, api_key: str, model: str) -> Optional[Dict]:
     if not GROQ_OK:
         return None
@@ -343,7 +324,7 @@ Minimum:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# HUGGINGFACE IMAGE GENERATION (OPTIONAL)
+# OPTIONAL HF IMAGE GENERATION (NOT USED BY DEFAULT)
 # ─────────────────────────────────────────────────────────────────────────────
 def generate_image_hf(prompt: str, hf_token: str, model_id: str):
     if not HF_OK:
@@ -366,6 +347,8 @@ def generate_image_hf(prompt: str, hf_token: str, model_id: str):
 TAILWIND_CDN = "https://cdn.tailwindcss.com"
 
 def _accent_colors(accent: str):
+    accent = (accent or "").lower().strip()
+
     if accent == "pink":
         return ("#fb7185", "#f472b6")
     if accent == "blue":
@@ -374,7 +357,7 @@ def _accent_colors(accent: str):
         return ("#22c55e", "#10b981")
     if accent == "red":
         return ("#fb7185", "#ef4444")
-    return ("#fbbf24", "#f97316")  # gold/orange default
+    return ("#fbbf24", "#f97316")
 
 
 def build_slide_html(slide: Dict, bg_img_path: Optional[str] = None) -> str:
@@ -386,76 +369,121 @@ def build_slide_html(slide: Dict, bg_img_path: Optional[str] = None) -> str:
     price = slide.get("price", "")
 
     design = slide.get("design", {})
-    template = design.get("template", "luxury_offer")
+    template = design.get("template", "")
     accent = design.get("accent", "gold")
     text_align = design.get("text_align", "left")
 
-    c1, c2 = _accent_colors(accent)
+    all_templates = [
+        "luxury_offer", "itinerary", "minimal_quote", "bold_typography",
+        "split_modern", "price_focus", "comparison", "checklist_card",
+        "devotional_glow", "health_tip"
+    ]
+    if template not in all_templates:
+        template = random.choice(all_templates)
 
+    c1, c2 = _accent_colors(accent)
     align_class = "text-center items-center" if text_align == "center" else "text-left items-start"
 
     bg_style = ""
     if bg_img_path and os.path.exists(bg_img_path):
         bg_style = f"background-image:url('file://{bg_img_path}'); background-size:cover; background-position:center;"
 
-    # Templates
-    if template == "minimal_quote":
+    def bullets(lines, icon="✔"):
+        out = ""
+        for ln in lines:
+            ln = ln.strip()
+            if not ln:
+                continue
+            out += f"""
+            <div class="flex gap-4 items-start">
+                <div class="text-[48px] font-extrabold" style="color:{c1}">{icon}</div>
+                <div class="text-[46px] font-semibold text-white/90 leading-snug">{ln}</div>
+            </div>
+            """
+        return out
+
+    if template == "luxury_offer":
         body_block = f"""
-        <div class="absolute inset-0 bg-black/60"></div>
-        <div class="relative flex flex-col justify-center h-full px-20 {align_class}">
-            <div class="text-[90px] font-extrabold leading-[1.05] tracking-tight drop-shadow-2xl">
-                {heading}
+        <div class="absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/75"></div>
+
+        <div class="relative px-16 pt-20 flex flex-col justify-between h-full">
+            <div>
+                <div class="inline-flex items-center gap-3 px-10 py-4 rounded-full font-extrabold text-black text-[38px] shadow-2xl"
+                     style="background:linear-gradient(90deg,{c1},{c2});">
+                    ✨ {highlight or "LIMITED OFFER"}
+                </div>
+
+                <div class="mt-10 text-[100px] font-extrabold leading-[1.02] tracking-tight drop-shadow-2xl">
+                    {heading}
+                </div>
+
+                <div class="mt-6 text-[50px] font-semibold text-white/80 max-w-[900px]">
+                    {subheading}
+                </div>
             </div>
-            <div class="mt-8 text-white/85 text-[42px] font-semibold max-w-[900px] leading-snug">
-                {" ".join(content[:3])}
-            </div>
-            <div class="mt-10 px-10 py-4 rounded-full font-bold text-black text-[38px]"
-                 style="background:linear-gradient(90deg,{c1},{c2});">
-                {cta or "FOLLOW FOR MORE"}
+
+            <div class="mb-20 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[60px] p-14 shadow-2xl">
+                <div class="space-y-8">
+                    {bullets(content[:5], "✔")}
+                </div>
+
+                <div class="mt-12 flex justify-between items-center">
+                    <div class="text-[68px] font-extrabold" style="color:{c1}">
+                        {price}
+                    </div>
+
+                    <div class="px-14 py-5 rounded-[50px] text-[46px] font-extrabold text-black shadow-2xl"
+                         style="background:linear-gradient(90deg,{c1},{c2});">
+                        {cta or "BOOK NOW"}
+                    </div>
+                </div>
             </div>
         </div>
         """
 
     elif template == "itinerary":
         items_html = ""
-        for line in content[:6]:
+        for idx, line in enumerate(content[:6], start=1):
             items_html += f"""
-            <div class="flex gap-4 items-start">
-                <div class="w-4 h-4 rounded-full mt-4" style="background:{c1}"></div>
-                <div class="text-[44px] font-semibold text-white/90 leading-snug">{line}</div>
+            <div class="flex gap-5 items-start">
+                <div class="w-[72px] h-[72px] rounded-2xl flex items-center justify-center font-extrabold text-[38px] text-black shadow-xl"
+                     style="background:linear-gradient(90deg,{c1},{c2});">
+                    {idx}
+                </div>
+                <div class="text-[46px] font-semibold text-white/90 leading-snug">{line}</div>
             </div>
             """
 
         body_block = f"""
-        <div class="absolute inset-0 bg-black/55"></div>
+        <div class="absolute inset-0 bg-gradient-to-b from-black/65 via-black/40 to-black/80"></div>
 
         <div class="relative px-16 pt-20">
             <div class="flex justify-between items-start">
                 <div>
-                    <div class="text-[90px] font-extrabold leading-[1.05] drop-shadow-xl">
+                    <div class="text-[92px] font-extrabold leading-[1.05] drop-shadow-xl">
                         {heading}
                     </div>
-                    <div class="mt-6 text-[44px] text-white/80 font-semibold">
+                    <div class="mt-6 text-[46px] text-white/80 font-semibold">
                         {subheading}
                     </div>
                 </div>
 
                 <div class="px-10 py-4 rounded-full text-[40px] font-extrabold text-black shadow-2xl"
                      style="background:linear-gradient(90deg,{c1},{c2});">
-                    {highlight or "BEST DEAL"}
+                    {highlight or "ITINERARY"}
                 </div>
             </div>
 
-            <div class="mt-20 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[50px] p-14 space-y-8 shadow-2xl">
+            <div class="mt-20 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[55px] p-14 space-y-10 shadow-2xl">
                 {items_html}
             </div>
 
             <div class="mt-14 flex justify-between items-center">
-                <div class="text-[60px] font-extrabold" style="color:{c1}">
+                <div class="text-[64px] font-extrabold" style="color:{c1}">
                     {price}
                 </div>
 
-                <div class="px-14 py-5 rounded-[45px] text-[44px] font-extrabold text-black shadow-2xl"
+                <div class="px-14 py-5 rounded-[50px] text-[46px] font-extrabold text-black shadow-2xl"
                      style="background:linear-gradient(90deg,{c1},{c2});">
                     {cta or "BOOK NOW"}
                 </div>
@@ -463,50 +491,255 @@ def build_slide_html(slide: Dict, bg_img_path: Optional[str] = None) -> str:
         </div>
         """
 
-    else:  # luxury_offer default
-        items_html = ""
-        for line in content[:5]:
-            items_html += f"""
-            <div class="flex gap-4 items-start">
-                <div class="text-[46px]" style="color:{c1}">✔</div>
-                <div class="text-[44px] font-semibold text-white/90 leading-snug">{line}</div>
-            </div>
-            """
-
+    elif template == "minimal_quote":
         body_block = f"""
-        <div class="absolute inset-0 bg-black/55"></div>
+        <div class="absolute inset-0 bg-black/70"></div>
 
-        <div class="relative px-16 pt-20 flex flex-col justify-between h-full">
+        <div class="relative flex flex-col justify-center h-full px-20 {align_class}">
+            <div class="text-[110px] font-extrabold leading-[1.05] tracking-tight drop-shadow-2xl">
+                {heading}
+            </div>
+
+            <div class="mt-10 text-white/85 text-[50px] font-semibold max-w-[900px] leading-snug">
+                {" ".join(content[:3])}
+            </div>
+
+            <div class="mt-16 px-14 py-5 rounded-full font-extrabold text-black text-[44px] shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {cta or "FOLLOW FOR MORE"}
+            </div>
+        </div>
+        """
+
+    elif template == "bold_typography":
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-tr from-black/80 via-black/40 to-black/90"></div>
+
+        <div class="relative flex flex-col justify-between h-full px-16 pt-20 pb-20">
             <div>
-                <div class="inline-block px-10 py-4 rounded-full font-extrabold text-black text-[38px] shadow-2xl"
-                     style="background:linear-gradient(90deg,{c1},{c2});">
-                    {highlight or "LIMITED OFFER"}
-                </div>
-
-                <div class="mt-10 text-[98px] font-extrabold leading-[1.02] tracking-tight drop-shadow-2xl">
+                <div class="text-[130px] font-extrabold leading-[0.95] tracking-tight drop-shadow-2xl">
                     {heading}
                 </div>
-
-                <div class="mt-6 text-[48px] font-semibold text-white/80 max-w-[900px]">
+                <div class="mt-8 text-[52px] font-semibold text-white/80 max-w-[950px]">
                     {subheading}
                 </div>
             </div>
 
-            <div class="mb-20 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[60px] p-14 shadow-2xl">
-                <div class="space-y-8">
-                    {items_html}
+            <div class="bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[55px] p-14 shadow-2xl space-y-8">
+                {bullets(content[:4], "➤")}
+            </div>
+
+            <div class="flex justify-between items-center mt-12">
+                <div class="px-10 py-4 rounded-full font-extrabold text-black text-[40px] shadow-2xl"
+                     style="background:linear-gradient(90deg,{c1},{c2});">
+                    {highlight or "TRENDING"}
                 </div>
+                <div class="text-[62px] font-extrabold" style="color:{c1}">
+                    {price}
+                </div>
+            </div>
+        </div>
+        """
 
-                <div class="mt-12 flex justify-between items-center">
-                    <div class="text-[64px] font-extrabold" style="color:{c1}">
-                        {price}
-                    </div>
+    elif template == "split_modern":
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-b from-black/30 via-black/60 to-black/85"></div>
 
-                    <div class="px-14 py-5 rounded-[50px] text-[44px] font-extrabold text-black shadow-2xl"
+        <div class="relative grid grid-cols-2 h-full">
+            <div class="p-16 flex flex-col justify-between">
+                <div>
+                    <div class="inline-block px-10 py-4 rounded-full font-extrabold text-black text-[38px] shadow-2xl"
                          style="background:linear-gradient(90deg,{c1},{c2});">
-                        {cta or "BOOK NOW"}
+                        {highlight or "SPECIAL DEAL"}
+                    </div>
+
+                    <div class="mt-10 text-[88px] font-extrabold leading-[1.05] drop-shadow-2xl">
+                        {heading}
+                    </div>
+
+                    <div class="mt-6 text-[48px] font-semibold text-white/80">
+                        {subheading}
                     </div>
                 </div>
+
+                <div class="text-[66px] font-extrabold" style="color:{c1}">
+                    {price}
+                </div>
+            </div>
+
+            <div class="p-16 flex flex-col justify-end">
+                <div class="bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[60px] p-14 shadow-2xl space-y-8">
+                    {bullets(content[:5], "✔")}
+                </div>
+
+                <div class="mt-10 px-14 py-5 rounded-[50px] text-[46px] font-extrabold text-black shadow-2xl text-center"
+                     style="background:linear-gradient(90deg,{c1},{c2});">
+                    {cta or "BOOK NOW"}
+                </div>
+            </div>
+        </div>
+        """
+
+    elif template == "price_focus":
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-b from-black/75 via-black/40 to-black/90"></div>
+
+        <div class="relative flex flex-col justify-center h-full px-16 text-center items-center">
+            <div class="px-12 py-5 rounded-full font-extrabold text-black text-[42px] shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {highlight or "FLASH SALE"}
+            </div>
+
+            <div class="mt-12 text-[110px] font-extrabold leading-[1.0] drop-shadow-2xl">
+                {heading}
+            </div>
+
+            <div class="mt-6 text-[56px] font-semibold text-white/80 max-w-[950px]">
+                {subheading}
+            </div>
+
+            <div class="mt-16 text-[140px] font-extrabold tracking-tight drop-shadow-2xl"
+                 style="color:{c1}">
+                {price}
+            </div>
+
+            <div class="mt-14 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[60px] p-14 shadow-2xl w-full max-w-[950px] space-y-8 text-left">
+                {bullets(content[:4], "✔")}
+            </div>
+
+            <div class="mt-16 px-16 py-6 rounded-[60px] text-[52px] font-extrabold text-black shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {cta or "BOOK NOW"}
+            </div>
+        </div>
+        """
+
+    elif template == "comparison":
+        left = content[:3]
+        right = content[3:6]
+
+        def block(title, lines, accent_color):
+            items = ""
+            for ln in lines:
+                items += f"<div class='text-[42px] font-semibold text-white/90'>• {ln}</div>"
+            return f"""
+            <div class="bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[55px] p-12 shadow-2xl">
+                <div class="text-[54px] font-extrabold mb-6" style="color:{accent_color}">{title}</div>
+                <div class="space-y-5">{items}</div>
+            </div>
+            """
+
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-br from-black/80 via-black/40 to-black/90"></div>
+
+        <div class="relative px-16 pt-20">
+            <div class="text-[92px] font-extrabold drop-shadow-2xl">{heading}</div>
+            <div class="mt-6 text-[48px] font-semibold text-white/80">{subheading}</div>
+
+            <div class="mt-18 grid grid-cols-2 gap-10">
+                {block("Option A", left, c1)}
+                {block("Option B", right, c2)}
+            </div>
+
+            <div class="mt-16 flex justify-between items-center">
+                <div class="text-[66px] font-extrabold" style="color:{c1}">
+                    {price}
+                </div>
+
+                <div class="px-14 py-5 rounded-[55px] text-[46px] font-extrabold text-black shadow-2xl"
+                     style="background:linear-gradient(90deg,{c1},{c2});">
+                    {cta or "CHOOSE NOW"}
+                </div>
+            </div>
+        </div>
+        """
+
+    elif template == "checklist_card":
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-b from-black/65 via-black/40 to-black/90"></div>
+
+        <div class="relative px-16 pt-20">
+            <div class="inline-block px-10 py-4 rounded-full font-extrabold text-black text-[40px] shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {highlight or "MUST KNOW"}
+            </div>
+
+            <div class="mt-10 text-[100px] font-extrabold drop-shadow-2xl leading-[1.02]">
+                {heading}
+            </div>
+
+            <div class="mt-6 text-[52px] font-semibold text-white/80 max-w-[950px]">
+                {subheading}
+            </div>
+
+            <div class="mt-18 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[65px] p-16 shadow-2xl space-y-10">
+                {bullets(content[:6], "☑")}
+            </div>
+
+            <div class="mt-16 px-16 py-6 rounded-[60px] text-[50px] font-extrabold text-black shadow-2xl text-center"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {cta or "SAVE THIS"}
+            </div>
+        </div>
+        """
+
+    elif template == "devotional_glow":
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-b from-black/80 via-black/55 to-black/90"></div>
+
+        <div class="absolute top-[-200px] left-[-200px] w-[600px] h-[600px] rounded-full blur-[120px]"
+             style="background:{c1}; opacity:0.35;"></div>
+
+        <div class="absolute bottom-[-250px] right-[-250px] w-[700px] h-[700px] rounded-full blur-[150px]"
+             style="background:{c2}; opacity:0.25;"></div>
+
+        <div class="relative flex flex-col justify-center h-full px-16 text-center items-center">
+            <div class="text-[100px] font-extrabold drop-shadow-2xl">
+                {heading}
+            </div>
+
+            <div class="mt-8 text-[54px] font-semibold text-white/80 max-w-[950px]">
+                {subheading}
+            </div>
+
+            <div class="mt-14 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[65px] p-16 shadow-2xl space-y-10 w-full max-w-[950px]">
+                <div class="text-[50px] font-semibold text-white/90 leading-snug">
+                    {" ".join(content[:4])}
+                </div>
+            </div>
+
+            <div class="mt-16 px-16 py-6 rounded-[60px] text-[52px] font-extrabold text-black shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {cta or "🙏 जय श्री राम"}
+            </div>
+        </div>
+        """
+
+    else:  # health_tip
+        body_block = f"""
+        <div class="absolute inset-0 bg-gradient-to-b from-black/75 via-black/45 to-black/90"></div>
+
+        <div class="relative px-16 pt-20">
+            <div class="inline-block px-10 py-4 rounded-full font-extrabold text-black text-[40px] shadow-2xl"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {highlight or "HEALTH TIP"}
+            </div>
+
+            <div class="mt-10 text-[100px] font-extrabold drop-shadow-2xl leading-[1.02]">
+                {heading}
+            </div>
+
+            <div class="mt-6 text-[52px] font-semibold text-white/80 max-w-[950px]">
+                {subheading}
+            </div>
+
+            <div class="mt-18 bg-white/10 backdrop-blur-2xl border border-white/15 rounded-[65px] p-16 shadow-2xl space-y-10">
+                {bullets(content[:6], "✔")}
+            </div>
+
+            <div class="mt-16 px-16 py-6 rounded-[60px] text-[50px] font-extrabold text-black shadow-2xl text-center"
+                 style="background:linear-gradient(90deg,{c1},{c2});">
+                {cta or "SAVE THIS"}
             </div>
         </div>
         """
@@ -530,24 +763,31 @@ def build_slide_html(slide: Dict, bg_img_path: Optional[str] = None) -> str:
           inset:0;
           {bg_style}
           background-color:#0b1220;
+          filter: contrast(1.1) saturate(1.1);
         }}
         .grain {{
           position:absolute;
           inset:0;
           background-image:url("https://grainy-gradients.vercel.app/noise.svg");
-          opacity:0.12;
+          opacity:0.14;
           mix-blend-mode:overlay;
+        }}
+        .vignette {{
+          position:absolute;
+          inset:0;
+          background: radial-gradient(circle at center, rgba(0,0,0,0.15), rgba(0,0,0,0.85));
         }}
       </style>
     </head>
     <body>
       <div class="bg"></div>
       <div class="grain"></div>
+      <div class="vignette"></div>
 
       {body_block}
 
       <div class="absolute bottom-8 left-14 text-white/40 text-[34px] font-semibold">
-        Slide • Premium Shorts Design
+        Premium Shorts • Slide Design
       </div>
     </body>
     </html>
@@ -564,12 +804,15 @@ def render_html_to_png(html: str, out_path: str) -> bool:
 
     try:
         with sync_playwright() as p:
-            browser = p.chromium.launch()
+            browser = p.chromium.launch(headless=True)
             page = browser.new_page(viewport={"width": 1080, "height": 1920})
-            page.set_content(html, wait_until="load")
-            page.wait_for_timeout(600)  # allow fonts load
+
+            page.set_content(html, wait_until="networkidle")
+            page.wait_for_timeout(1200)
+
             page.screenshot(path=out_path, full_page=True)
             browser.close()
+
         return True
     except Exception as e:
         st.error(f"Playwright render failed: {e}")
@@ -594,19 +837,143 @@ def create_pptx_from_pngs(png_paths: List[str]) -> bytes:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VIDEO BUILDER
+# VIDEO BUILDER (CINEMATIC)
 # ─────────────────────────────────────────────────────────────────────────────
-def build_video_from_pngs(png_paths: List[str], duration: int, output_path: str) -> bool:
+def ken_burns_effect(clip, zoom=1.12, pan_x=0.06, pan_y=0.04, direction="in"):
+    w, h = clip.size
+
+    def make_frame(t):
+        frame = clip.get_frame(t)
+        img = Image.fromarray(frame)
+
+        progress = t / clip.duration
+
+        if direction == "out":
+            z = zoom - (zoom - 1) * progress
+        else:
+            z = 1 + (zoom - 1) * progress
+
+        new_w = int(w * z)
+        new_h = int(h * z)
+
+        img = img.resize((new_w, new_h), Image.LANCZOS)
+
+        dx = int((new_w - w) * pan_x * progress)
+        dy = int((new_h - h) * pan_y * progress)
+
+        img = img.crop((dx, dy, dx + w, dy + h))
+        return np.array(img)
+
+    return clip.fl(make_frame, apply_to=["mask"])
+
+
+def motion_blur_effect(clip, blur_strength=2):
+    def blur_frame(get_frame, t):
+        frame = get_frame(t)
+        img = Image.fromarray(frame)
+        img = img.filter(ImageFilter.GaussianBlur(radius=blur_strength))
+        return np.array(img)
+
+    return clip.fl(blur_frame)
+
+
+def swipe_transition(clip1, clip2, duration=0.5, direction="left"):
+    w, h = clip1.size
+    clip2 = clip2.set_start(clip1.duration - duration)
+
+    def make_frame(t):
+        if t < clip1.duration - duration:
+            return clip1.get_frame(t)
+
+        tt = (t - (clip1.duration - duration)) / duration
+        tt = min(max(tt, 0), 1)
+
+        f1 = clip1.get_frame(t)
+        f2 = clip2.get_frame(t - (clip1.duration - duration))
+
+        if direction == "left":
+            x = int(w * tt)
+            out = np.zeros_like(f1)
+            out[:, :w-x] = f1[:, x:]
+            out[:, w-x:] = f2[:, :x]
+
+        elif direction == "right":
+            x = int(w * tt)
+            out = np.zeros_like(f1)
+            out[:, x:] = f1[:, :w-x]
+            out[:, :x] = f2[:, w-x:]
+
+        elif direction == "up":
+            y = int(h * tt)
+            out = np.zeros_like(f1)
+            out[:h-y, :] = f1[y:, :]
+            out[h-y:, :] = f2[:y, :]
+
+        else:  # down
+            y = int(h * tt)
+            out = np.zeros_like(f1)
+            out[y:, :] = f1[:h-y, :]
+            out[:y, :] = f2[h-y:, :]
+
+        return out
+
+    return ImageClip(make_frame, duration=clip1.duration)
+
+
+def build_video_from_pngs(
+    png_paths: List[str],
+    duration: int,
+    output_path: str,
+    bg_music_path: Optional[str] = None,
+    music_volume: float = 0.15
+) -> bool:
     if not MOVIEPY_OK:
         return False
 
     clips = []
-    for pth in png_paths:
-        clip = ImageClip(pth).set_duration(duration)
-        clips.append(clip)
+    for path in png_paths:
+        base = ImageClip(path).set_duration(duration)
 
-    final = concatenate_videoclips(clips, method="compose")
-    final.write_videofile(output_path, fps=24, codec="libx264", audio_codec="aac", logger=None)
+        direction = random.choice(["in", "out"])
+        zoom = random.choice([1.08, 1.12, 1.15])
+        pan_x = random.choice([0.0, 0.05, 0.1])
+        pan_y = random.choice([0.0, 0.03, 0.06])
+
+        animated = ken_burns_effect(base, zoom=zoom, pan_x=pan_x, pan_y=pan_y, direction=direction)
+
+        if random.random() > 0.6:
+            animated = motion_blur_effect(animated, blur_strength=random.choice([1, 2, 3]))
+
+        animated = animated.fx(vfx.fadein, 0.25).fx(vfx.fadeout, 0.25)
+        clips.append(animated)
+
+    merged = clips[0]
+    for i in range(1, len(clips)):
+        swipe_dir = random.choice(["left", "right", "up", "down"])
+        merged = swipe_transition(merged, clips[i], duration=0.5, direction=swipe_dir)
+
+    final = merged
+
+    if bg_music_path and os.path.exists(bg_music_path):
+        music = AudioFileClip(bg_music_path).volumex(music_volume)
+
+        if music.duration < final.duration:
+            loops = int(final.duration // music.duration) + 1
+            music = concatenate_videoclips([music] * loops).audio
+
+        music = music.subclip(0, final.duration)
+        final = final.set_audio(music)
+
+    final.write_videofile(
+        output_path,
+        fps=30,
+        codec="libx264",
+        audio_codec="aac",
+        bitrate="9000k",
+        threads=4,
+        logger=None
+    )
+
     final.close()
     return True
 
@@ -696,7 +1063,7 @@ def page_step1():
 # STEP 2
 # ─────────────────────────────────────────────────────────────────────────────
 def page_step2():
-    step_badge(2, "Review & Edit")
+    step_badge(2, "Review, Edit & Upload Images")
     progress_bar(2)
 
     sc = st.session_state.slide_content
@@ -716,8 +1083,24 @@ def page_step2():
             slides[i]["highlight"] = st.text_input("Highlight Badge", value=s.get("highlight", ""), key=f"hl_{i}")
             slides[i]["cta"] = st.text_input("CTA", value=s.get("cta", ""), key=f"cta_{i}")
             slides[i]["price"] = st.text_input("Price", value=s.get("price", ""), key=f"pr_{i}")
-
             slides[i]["image_prompt"] = st.text_input("Image Prompt (English)", value=s.get("image_prompt", ""), key=f"ip_{i}")
+
+            up = st.file_uploader(
+                f"📷 Upload Background Image (Slide {i+1})",
+                type=["png", "jpg", "jpeg"],
+                key=f"upload_slide_{i}"
+            )
+
+            if up:
+                img_path = str(Path(tempfile.gettempdir()) / f"user_slide_{i+1:02d}.png")
+                with open(img_path, "wb") as f:
+                    f.write(up.getbuffer())
+
+                slides[i]["uploaded_bg"] = img_path
+                st.success("✅ Image attached to slide!")
+
+            if slides[i].get("uploaded_bg") and os.path.exists(slides[i]["uploaded_bg"]):
+                st.image(slides[i]["uploaded_bg"], caption="Selected Background", use_container_width=True)
 
     sc["slides"] = slides
     st.session_state.slide_content = sc
@@ -728,7 +1111,7 @@ def page_step2():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3 (HTML → PNG RENDER)
+# STEP 3
 # ─────────────────────────────────────────────────────────────────────────────
 def page_step3():
     step_badge(3, "Render Pro Slides (Tailwind + Playwright)")
@@ -748,13 +1131,20 @@ def page_step3():
             out_dir = Path(tempfile.gettempdir()) / "slider_html_slides"
             out_dir.mkdir(exist_ok=True)
 
+            for old in out_dir.glob("slide_*.png"):
+                try:
+                    old.unlink()
+                except:
+                    pass
+
             png_paths = []
-
             for i, slide in enumerate(slides):
-                html = build_slide_html(slide)
-                out_png = str(out_dir / f"slide_{i+1:02d}.png")
+                bg_img = slide.get("uploaded_bg")
+                html = build_slide_html(slide, bg_img_path=bg_img)
 
+                out_png = str(out_dir / f"slide_{i+1:02d}.png")
                 ok = render_html_to_png(html, out_png)
+
                 if ok:
                     png_paths.append(out_png)
 
@@ -774,7 +1164,7 @@ def page_step3():
 # STEP 4 EXPORT
 # ─────────────────────────────────────────────────────────────────────────────
 def page_step4():
-    step_badge(4, "Export Assets")
+    step_badge(4, "Export Assets (PNG / PPTX / MP4)")
     progress_bar(4)
 
     png_paths = st.session_state.get("png_paths", [])
@@ -791,18 +1181,35 @@ def page_step4():
     st.download_button("⬇️ Download PNG Slides ZIP", zip_buf.getvalue(), "slider_slides.zip", "application/zip")
 
     st.markdown("---")
-
     pptx_bytes = create_pptx_from_pngs(png_paths)
-    st.download_button("⬇️ Download PPTX", pptx_bytes, "slider_slides.pptx",
-                       "application/vnd.openxmlformats-officedocument.presentationml.presentation")
+    st.download_button(
+        "⬇️ Download PPTX",
+        pptx_bytes,
+        "slider_slides.pptx",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
 
     st.markdown("---")
+    st.markdown("### 🎵 Optional Background Music")
+    bg_music = st.file_uploader("Upload MP3", type=["mp3"])
+    music_path = None
 
+    if bg_music:
+        music_path = str(Path(tempfile.gettempdir()) / "bg_music.mp3")
+        with open(music_path, "wb") as f:
+            f.write(bg_music.getbuffer())
+        st.success("✅ Music uploaded!")
+
+    st.markdown("---")
     if MOVIEPY_OK:
         duration = st.slider("Seconds per slide (video)", 2, 10, 5)
-        if st.button("🎬 Build MP4 Video"):
+
+        if st.button("🎬 Build Cinematic MP4 Video"):
             out_mp4 = str(Path(tempfile.gettempdir()) / "slider_video.mp4")
-            ok = build_video_from_pngs(png_paths, duration, out_mp4)
+
+            with st.spinner("Creating cinematic video with transitions..."):
+                ok = build_video_from_pngs(png_paths, duration, out_mp4, bg_music_path=music_path)
+
             if ok:
                 st.session_state.video_path = out_mp4
                 st.success("✅ MP4 created!")
